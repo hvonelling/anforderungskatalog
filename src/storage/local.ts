@@ -46,6 +46,11 @@ export const local = {
   loadProjects(): Project[] {
     const out: Project[] = [];
     for (const id of read<string[]>(K_INDEX, [])) {
+      if (id.includes("--")) {
+        // Überbleibsel einer älteren App-Fassung, die den neuen Dateinamen für eine Kennung hielt.
+        this.removeProject(id);
+        continue;
+      }
       try {
         const raw = localStorage.getItem(K_PROJECT + id);
         if (raw) out.push(normalizeProject(JSON.parse(raw)));

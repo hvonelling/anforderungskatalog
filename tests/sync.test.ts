@@ -3,7 +3,7 @@ import { clone, demoProject, sameProject, stamp } from "../src/domain/model";
 import type { Project } from "../src/domain/types";
 import { memoryBlobs } from "../src/storage/blobs";
 import { decryptBytes, decryptText, encryptBytes, encryptText, forgetKeys, isEncrypted, randomPassword } from "../src/storage/crypto";
-import { attPath, emptySyncState, fetchAttachment, sync, syncOnce, type SyncState } from "../src/storage/sync";
+import { attPath, emptySyncState, fetchAttachment, fileSlug, idFromFile, projectFile, sync, syncOnce, type SyncState } from "../src/storage/sync";
 import { fakeGitHub } from "./fakeGitHub";
 
 function edit(p: Project, now: number, fn: (d: Project) => void): Project {
@@ -72,7 +72,7 @@ describe("Abgleich", () => {
     a.dirty.add(a.projects[0].id);
     const r = await a.sync();
     expect(r.pushed).toBe(1);
-    const file = gh.files.get(`projekte/${a.projects[0].id}.enc.json`)!;
+    const file = gh.files.get(`projekte/${projectFile(a.projects[0])}`)!;
     const text = new TextDecoder().decode(file.bytes);
     expect(text).toContain("anforderungskatalog-enc-v1");
     expect(text).not.toContain("Kundenportal");
@@ -126,7 +126,7 @@ describe("Abgleich", () => {
       once = false;
       gh.onPut(null);
       // B schreibt genau in dem Moment, in dem A schreiben will.
-      const path = `projekte/${b.projects[0].id}.enc.json`;
+      const path = `projekte/${projectFile(b.projects[0])}`;
       const old = gh.files.get(path)!;
       gh.files.set(path, { bytes: old.bytes, sha: "fremd" });
     });
@@ -194,5 +194,88 @@ describe("Abgleich", () => {
     const empty = fakeGitHub("ich/leer");
     await expect(sync([], new Set(), emptySyncState(), { ...empty.cfg, repo: "ich/anders" }, b.blobs, empty.fetch)).rejects.toThrow("Repo nicht gefunden");
     expect((await sync([], new Set(), emptySyncState(), empty.cfg, b.blobs, empty.fetch)).projects).toEqual([]);
+  });
+
+  it("benennt die Datei nach Projektname und Kennung", async () => {
+    expect(fileSlug("Kundenportal (Beispiel)")).toBe("Kundenportal-Beispiel");
+    expect(fileSlug("  Größe & Maße – v2.0!  ")).toBe("Groesse-Masse-v2-0");
+    expect(fileSlug("a--b")).toBe("a-b");
+    expect(fileSlug("§§§")).toBe("");
+    expect(fileSlug("x".repeat(80)).length).toBe(40);
+    expect(projectFile({ id: "jabc123", name: "Mein Projekt" })).toBe("Mein-Projekt--jabc123.enc.json");
+    expect(projectFile({ id: "jabc123", name: "!!!" })).toBe("jabc123.enc.json");
+    expect(idFromFile("Mein-Projekt--jabc123.enc.json")).toBe("jabc123");
+    expect(idFromFile("jabc123.enc.json")).toBe("jabc123");
+    const gh = fakeGitHub();
+    const a = device(gh);
+    a.projects = [demoProject(1000)];
+    await a.sync();
+    expect([...gh.files.keys()]).toEqual(["projekte/Kundenportal-Beispiel--" + a.projects[0].id + ".enc.json"]);
+  });
+
+  it("verschiebt die Datei beim Umbenennen und andere Geräte folgen", async () => {
+    const gh = fakeGitHub();
+    const a = device(gh),
+      b = device(gh);
+    a.projects = [demoProject(1000)];
+    const id = a.projects[0].id;
+    await a.sync();
+    await b.sync();
+    a.edit(0, 2000, (p) => (p.name = "Händlerportal"));
+    await a.sync();
+    expect([...gh.files.keys()]).toEqual(["projekte/Haendlerportal--" + id + ".enc.json"]);
+    b.edit(0, 3000, (p) => (p.reqs[0].title = "Von B"));
+    const r = await b.sync();
+    expect(r.projects.length).toBe(1);
+    expect(b.projects[0].name).toBe("Händlerportal");
+    expect([...gh.files.keys()]).toEqual(["projekte/Haendlerportal--" + id + ".enc.json"]);
+    await a.sync();
+    expect(a.projects[0].reqs[0].title).toBe("Von B");
+    expect(sameProject(a.projects[0], b.projects[0])).toBe(true);
+    const w = gh.writes();
+    await a.sync();
+    await b.sync();
+    expect(gh.writes()).toBe(w);
+  });
+
+  it("stellt Dateien der früheren Benennung einmalig um", async () => {
+    const gh = fakeGitHub();
+    const a = device(gh);
+    a.projects = [demoProject(1000)];
+    const id = a.projects[0].id;
+    await a.sync();
+    // Zustand wie vor dem Update: Datei heißt nur nach der Kennung.
+    const neu = "projekte/" + projectFile(a.projects[0]);
+    const alt = "projekte/" + id + ".enc.json";
+    gh.files.set(alt, gh.files.get(neu)!);
+    gh.files.delete(neu);
+    const b = device(gh);
+    const r = await b.sync();
+    expect(r.pulled).toBe(1);
+    expect([...gh.files.keys()]).toEqual([neu]);
+    // Gerät A hatte die Datei unter altem Namen im Blick und kommt ohne Verlust mit.
+    await a.sync();
+    expect(a.projects.length).toBe(1);
+    expect(sameProject(a.projects[0], b.projects[0])).toBe(true);
+    expect([...gh.files.keys()]).toEqual([neu]);
+  });
+
+  it("führt zwei Dateien desselben Projekts zusammen", async () => {
+    const gh = fakeGitHub();
+    const a = device(gh),
+      b = device(gh);
+    a.projects = [demoProject(1000)];
+    const id = a.projects[0].id;
+    await a.sync();
+    await b.sync();
+    // Eine alte App-Fassung schreibt parallel noch unter dem alten Namen.
+    const stale = gh.files.get("projekte/" + projectFile(a.projects[0]))!;
+    a.edit(0, 2000, (p) => (p.reqs[0].title = "Neuer Stand"));
+    await a.sync();
+    gh.files.set("projekte/" + id + ".enc.json", { bytes: stale.bytes, sha: "alt1" });
+    await b.sync();
+    expect([...gh.files.keys()]).toEqual(["projekte/" + projectFile(a.projects[0])]);
+    expect(b.projects.length).toBe(1);
+    expect(b.projects[0].reqs[0].title).toBe("Neuer Stand");
   });
 });

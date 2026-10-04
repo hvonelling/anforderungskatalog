@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { clone, demoProject, sameProject, stamp } from "../src/domain/model";
 import { memoryBlobs } from "../src/storage/blobs";
 import { DEFAULT_REPO, deleteFile, getSha, listDir, type GitHubConfig } from "../src/storage/github";
-import { attPath, emptySyncState, fetchAttachment, sync } from "../src/storage/sync";
+import { attPath, emptySyncState, fetchAttachment, projectFile, sync } from "../src/storage/sync";
 
 const token = process.env.AK_LIVE_TOKEN ?? "";
 const cfg: GitHubConfig = { repo: process.env.AK_LIVE_REPO ?? DEFAULT_REPO, token, password: "selbsttest-passwort-123", prefix: "selbsttest-" + Date.now() };
@@ -23,7 +23,7 @@ describe.skipIf(!token)("Abgleich gegen GitHub", () => {
   it("gleicht zwei Geräte samt Anhang über das echte Repo ab", async () => {
     const a = { projects: [demoProject()], state: emptySyncState(), blobs: memoryBlobs() };
     const pid = a.projects[0].id;
-    created.push(`projekte/${pid}.enc.json`, attPath(pid, "att1"));
+    created.push(`projekte/${projectFile(a.projects[0])}`, attPath(pid, "att1"));
     const content = new Uint8Array(300_000).map((_, i) => (i * 7) % 256);
     await a.blobs.put("att1", content);
     const edited = clone(a.projects[0]);
@@ -34,7 +34,7 @@ describe.skipIf(!token)("Abgleich gegen GitHub", () => {
     const r1 = await sync(a.projects, new Set([pid]), a.state, cfg, a.blobs);
     expect(r1.pushed).toBe(1);
     expect(r1.uploaded).toBe(1);
-    expect((await listDir(cfg, "projekte")).map((f) => f.name)).toEqual([pid + ".enc.json"]);
+    expect((await listDir(cfg, "projekte")).map((f) => f.name)).toEqual([projectFile(a.projects[0])]);
 
     // Zweites Gerät: holt alles, ändert etwas, schreibt zurück.
     const b = { blobs: memoryBlobs() };

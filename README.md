@@ -29,7 +29,7 @@ mit einem Passwort verschlüsselt (AES-256-GCM, Schlüssel per PBKDF2). Einricht
 
 Ablage im Daten-Repo:
 
-    projekte/<Projekt-ID>.enc.json
+    projekte/<Name>--<Projekt-ID>.enc.json
     anhaenge/<Projekt-ID>/<Anhang-ID>.bin
 
 Zusammengeführt wird je Datensatz: Die jüngere Änderung gewinnt, Löschungen bleiben erhalten.

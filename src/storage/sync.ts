@@ -1,7 +1,7 @@
 // Automatischer Abgleich mit einem privaten GitHub-Repo.
 //
 // Ablage im Repo:
-//   projekte/<Projekt-ID>.enc.json          je Projekt eine verschlüsselte Datei
+//   projekte/<Name>--<Projekt-ID>.enc.json  je Projekt eine verschlüsselte Datei (der Name dient nur der Lesbarkeit)
 //   anhaenge/<Projekt-ID>/<Anhang-ID>.bin   je Anhang eine verschlüsselte Datei
 //
 // Ablauf je Projekt: Datei holen → entschlüsseln → mit dem Stand dieses Geräts zusammenführen →
@@ -39,7 +39,32 @@ export interface SyncResult {
   uploaded: number;
 }
 
-const projectPath = (id: string) => `${PROJECT_DIR}/${id}.enc.json`;
+const EXT = ".enc.json";
+
+/** Lesbarer Namensteil für die Datei im Repo: nur Buchstaben, Ziffern und einzelne Bindestriche. */
+export function fileSlug(name: string): string {
+  const map: Record<string, string> = { ä: "ae", ö: "oe", ü: "ue", Ä: "Ae", Ö: "Oe", Ü: "Ue", ß: "ss" };
+  return name
+    .replace(/[äöüÄÖÜß]/g, (ch) => map[ch])
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+}
+/** Dateiname eines Projekts: "<Name>--<Kennung>.enc.json". Maßgeblich ist allein die Kennung. */
+export function projectFile(p: { id: string; name: string }): string {
+  const slug = fileSlug(p.name);
+  return (slug ? slug + "--" : "") + p.id + EXT;
+}
+/** Kennung aus dem Dateinamen lesen. Versteht auch die frühere Form "<Kennung>.enc.json". */
+export function idFromFile(file: string): string {
+  const base = file.slice(0, -EXT.length);
+  const i = base.lastIndexOf("--");
+  return i < 0 ? base : base.slice(i + 2);
+}
+const projectPath = (file: string) => `${PROJECT_DIR}/${file}`;
 export const attPath = (pid: string, id: string) => `${ATT_DIR}/${pid}/${id}.bin`;
 const stampText = (now: number) => new Date(now).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -71,35 +96,50 @@ export async function syncOnce(local: Project[], dirty: Set<string>, state: Sync
     uploaded = 0;
   const msg = "Abgleich " + stampText(now);
 
-  const remote = (await listDir(cfg, PROJECT_DIR, f)).filter((x) => x.name.endsWith(".enc.json"));
-  const remoteIds = new Set<string>();
+  const remote = (await listDir(cfg, PROJECT_DIR, f)).filter((x) => x.name.endsWith(EXT));
+  // Nach Kennung gruppieren: Nach einer Umbenennung können kurzzeitig zwei Dateien zu einem Projekt gehören.
+  const byId = new Map<string, { name: string; sha: string }[]>();
   for (const file of remote) {
-    const id = file.name.slice(0, -".enc.json".length);
-    remoteIds.add(id);
+    const id = idFromFile(file.name);
+    (byId.get(id) ?? byId.set(id, []).get(id)!).push(file);
+  }
+  for (const [id, files] of byId) {
     const mine = out.get(id);
-    if (mine && st.shas[id] === file.sha && !dirty.has(id)) continue; // weder hier noch dort geändert
-    const bytes = await getRaw(cfg, projectPath(id), f);
-    if (!bytes) continue; // zwischen Auflisten und Holen gelöscht
-    const theirs = await unpack(bytes, cfg);
-    if (theirs.id !== id) theirs.id = id;
-    const merged = mine ? mergeProject(mine, theirs) : theirs;
+    // Weder hier noch dort geändert, und die Datei heißt schon richtig.
+    if (mine && files.length === 1 && files[0].name === projectFile(mine) && st.shas[id] === files[0].sha && !dirty.has(id)) continue;
+    let merged: Project | null = mine ?? null;
+    const contents = new Map<string, Project>();
+    for (const file of files) {
+      const bytes = await getRaw(cfg, projectPath(file.name), f);
+      if (!bytes) continue; // zwischen Auflisten und Holen gelöscht
+      const theirs = await unpack(bytes, cfg);
+      theirs.id = id;
+      contents.set(file.name, theirs);
+      merged = merged ? mergeProject(merged, theirs) : theirs;
+    }
+    if (!merged) continue;
     if (!mine || !sameProject(merged, mine)) pulled++;
-    if (sameProject(merged, theirs)) st.shas[id] = file.sha;
+    const want = projectFile(merged);
+    const cur = files.find((x) => x.name === want);
+    const curContent = contents.get(want);
+    if (cur && curContent && sameProject(merged, curContent)) st.shas[id] = cur.sha;
     else {
-      st.shas[id] = await putFile(cfg, projectPath(id), await pack(merged, cfg), file.sha, msg, f);
+      st.shas[id] = await putFile(cfg, projectPath(want), await pack(merged, cfg), cur && curContent ? cur.sha : null, msg, f);
       pushed++;
     }
+    // Dateien unter altem Namen entfernen (Projekt umbenannt oder frühere Benennung ohne Namen).
+    for (const file of files) if (file.name !== want) await deleteFile(cfg, projectPath(file.name), file.sha, "Projektdatei umbenannt " + stampText(now), f);
     out.set(id, merged);
   }
   for (const p of local) {
-    if (remoteIds.has(p.id)) continue;
+    if (byId.has(p.id)) continue;
     if (p.deletedAt) {
       // Gelöschtes Projekt, das im Repo nie ankam oder dort schon entfernt ist: Marke nicht mehr nötig.
       delete st.shas[p.id];
       out.delete(p.id);
       continue;
     }
-    st.shas[p.id] = await putFile(cfg, projectPath(p.id), await pack(p, cfg), null, msg, f);
+    st.shas[p.id] = await putFile(cfg, projectPath(projectFile(p)), await pack(p, cfg), null, msg, f);
     pushed++;
   }
 
