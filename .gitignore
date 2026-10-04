@@ -1,0 +1,11 @@
+node_modules/
+dist/
+# Echte Katalogdaten, Exporte und Geheimnisse nie ins Repo
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!public/manifest.webmanifest
+*passwort*
+*.enc
+.DS_Store
