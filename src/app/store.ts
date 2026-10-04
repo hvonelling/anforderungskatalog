@@ -547,6 +547,10 @@ export const store = new Store();
 /** Komponente bei jeder Änderung neu zeichnen. */
 export function useStore(): Store {
   const [, tick] = useState(0);
-  useEffect(() => store.subscribe(() => tick((n) => n + 1)), []);
+  useEffect(() => {
+    const off = store.subscribe(() => tick((n) => n + 1));
+    tick((n) => n + 1); // Änderungen zwischen erstem Zeichnen und Anmelden nachholen
+    return off;
+  }, []);
   return store;
 }
