@@ -204,4 +204,158 @@ describe("Oberfläche", () => {
     expect(store.project!.name).toBe("Kundenportal (Beispiel)");
     expect(new Store().visible().length).toBe(1);
   });
+
+  it("fragt bei einem Projekt aus der Zeit vor dem Update einmal nach Frontends", async () => {
+    // Ein Stand, wie ihn die App vor dem Update gespeichert hat: ohne Frontends, Farben und Teile.
+    const req = (n: number, title: string, menuId: string) => ({
+      id: "r" + n, key: "REQ-00" + n, title, menuId, prio: "M", status: "open", versionId: "v1", phaseId: "p1", prereqIds: [], desc: "", story: { role: "", goal: "", benefit: "" },
+      criteria: [], attachments: [], history: [], createdAt: 1000 + n, deletedAt: null, u: 2000 + n,
+    });
+    const old = {
+      format: 1, id: "jalt", name: "Energieportal", seq: 3,
+      menu: [
+        { id: "mA", name: "Admin", parent: null, o: 0, u: 1 },
+        { id: "mK", name: "Kunde", parent: null, o: 1, u: 1 },
+        { id: "mA1", name: "Benutzer", parent: "mA", o: 2, u: 1 },
+        { id: "mK1", name: "Verträge", parent: "mK", o: 3, u: 1 },
+      ],
+      versions: [{ id: "v1", name: "v1.0", o: 0, u: 1, phases: [{ id: "p1", name: "Phase 1", o: 0, u: 1 }] }],
+      prereqs: [], reqs: [req(1, "Benutzer anlegen", "mA1"), req(2, "Vertrag ansehen", "mK1"), req(3, "Vertrag kündigen", "mK1")],
+      gone: {}, createdAt: 1, deletedAt: null, u: 1,
+    };
+    const file = new File(["x"], "alt.json");
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify(old) });
+    await act(() => store.importFile(file));
+    expect(store.project!.name).toBe("Energieportal");
+    expect(store.project!.reqs.length).toBe(3);
+    expect($(".dialog")!.textContent).toContain("Neu: Frontends");
+    expect($(".dialog")!.textContent).toContain("Admin · Kunde");
+    await click(byText(".dialog button", "Ja, als Frontends übernehmen"));
+    expect($(".dialog")).toBeNull();
+    expect(store.project!.frontends.map((f) => f.name)).toEqual(["Admin", "Kunde"]);
+    expect($$(".fe-tabs .chip").map((c) => c.textContent)).toEqual(["Alle", "Admin", "Kunde", "+"]);
+    expect($$(".fe-head").map((c) => c.firstElementChild!.textContent)).toEqual(["Admin", "Kunde"]);
+    expect($$(".row").length).toBe(3);
+    // Die Frage kommt nach einem Neustart nicht wieder.
+    expect(new Store().project!.feAsked).toBe(true);
+  });
+
+  it("filtert über die Frontend-Reiter und pflegt Frontends", async () => {
+    await click(byText(".fe-tabs .chip", "Kunde"));
+    expect($$(".row").length).toBe(2);
+    expect($(".filters .scope b")!.textContent).toContain("Kunde");
+    expect($$(".tree .node").map((n) => n.querySelector(".grow")!.textContent)).toEqual(["Alles in Kunde", "Verträge"]);
+    // Neue Anforderung landet im gewählten Frontend.
+    await click(byText(".actions button", "+ Anforderung"));
+    const kunde = store.project!.frontends[1].id;
+    expect(store.project!.reqs.at(-1)!.fe).toBe(kunde);
+    // „Betrifft auch“ zeigt sie zusätzlich im anderen Frontend.
+    await type($(".title-input") as HTMLTextAreaElement, "Ticket melden");
+    await click(byText(".drawer .hrow .chip", "Admin"));
+    expect(store.project!.reqs.at(-1)!.also).toEqual([store.project!.frontends[0].id]);
+    await click($(".drawer-head .icon-btn")!);
+    await click(byText(".fe-tabs .chip", "Admin"));
+    expect($$(".row").map((r) => r.querySelector(".title")!.textContent)).toEqual(["Benutzer anlegen", "Ticket melden"]);
+    // Frontend anlegen, benennen, löschen
+    await click(byText(".fe-tabs .chip", "+"));
+    const input = $(".fe-tabs input") as HTMLInputElement;
+    await type(input, "Dienstleister 1");
+    await act(() => void input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(store.project!.frontends.map((f) => f.name)).toEqual(["Admin", "Kunde", "Dienstleister 1"]);
+    await click(byText(".side-head button", "+ Menü"));
+    const neu = store.project!.menu.at(-1)!;
+    expect(neu.fe).toBe(store.project!.frontends[2].id);
+    await act(() => store.commitMenu());
+    const orig = globalThis.confirm;
+    globalThis.confirm = () => true;
+    await click(byText(".fe-actions button", "Löschen"));
+    globalThis.confirm = orig;
+    expect(store.project!.frontends.map((f) => f.name)).toEqual(["Admin", "Kunde"]);
+    // Der Menüpunkt des gelöschten Frontends hängt jetzt unter „Dienstleister 1“ im ersten Frontend.
+    const host = store.project!.menu.find((m) => m.name === "Dienstleister 1")!;
+    expect(host.fe).toBe(store.project!.frontends[0].id);
+    expect(store.project!.menu.find((m) => m.id === neu.id)!.parent).toBe(host.id);
+  });
+
+  it("färbt Menüpunkte und zeigt die Farbe in Liste, Board und Tabelle", async () => {
+    await click(byText(".fe-tabs .chip", "Alle"));
+    await click(byText(".tree .node", "Verträge"));
+    await click($(".node.on button[title='Farbe wählen']")!);
+    expect($$(".palette .swatch").length).toBe(9);
+    await click($(".palette .swatch.c-blau")!);
+    expect(store.project!.menu.find((m) => m.name === "Verträge")!.color).toBe("blau");
+    expect($(".palette")).toBeNull();
+    expect($(".node.on .cdot.c-blau")).not.toBeNull();
+    expect($(".group-head.colored.c-blau")).not.toBeNull();
+    expect($$(".row.colored.c-blau").length).toBe(2);
+    await click(byText(".tab", "Board"));
+    expect($$(".card.colored.c-blau").length).toBe(2);
+    await click(byText(".tab", "Tabelle"));
+    expect($$("table.t .cdot.c-blau").length).toBe(2);
+    expect($$("table.t th").map((h) => h.textContent!.trim().replace(/ .*/, ""))).toContain("Frontend");
+    await click(byText(".tab", "Liste"));
+    // Farbe wieder entfernen
+    await click($(".node.on button[title='Farbe wählen']")!);
+    await click($(".palette .swatch.none")!);
+    expect(store.project!.menu.find((m) => m.name === "Verträge")!.color).toBe(null);
+    await click($(".node.on button[title='Farbe wählen']")!);
+    await click($(".palette .swatch.c-rot")!);
+    await click($(".node.all")!);
+  });
+
+  it("bildet Teilanforderungen und warnt bei Erledigt trotz offener Teile", async () => {
+    await click(byText(".row", "Vertrag ansehen"));
+    const part = $(".drawer input[placeholder^='Neue Teilanforderung']") as HTMLInputElement;
+    for (const name of ["Vertragsdaten zeigen", "PDF herunterladen"]) {
+      await type(part, name);
+      await act(() => void part.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    }
+    const big = store.project!.reqs.find((r) => r.title === "Vertrag ansehen")!;
+    const parts = store.project!.reqs.filter((r) => r.parentId === big.id);
+    expect(parts.map((r) => r.key)).toEqual(["REQ-002.1", "REQ-002.2"]);
+    expect(parts.every((r) => r.menuId === big.menuId && r.fe === big.fe)).toBe(true);
+    expect($$(".drawer .part-row").length).toBe(2);
+    expect($$(".row.part").length).toBe(2);
+    expect(byText(".row", "Vertrag ansehen").textContent).toContain("0/2 Teile");
+    // Status der großen Anforderung bleibt von Hand, mit Warnung.
+    await click(byText(".drawer .seg button", "Erledigt"));
+    expect($(".drawer .err-box")!.textContent).toContain("Teilanforderungen noch offen");
+    expect(byText(".row", "Vertrag ansehen").textContent).toContain("⚠ 0/2 Teile");
+    // In den Teil springen: Ort ist gesperrt, Herauslösen möglich.
+    await click($$(".drawer .part-row")[1]);
+    expect($(".drawer .part-of")!.textContent).toContain("REQ-002");
+    expect(($$(".drawer select")[0] as HTMLSelectElement).disabled).toBe(true);
+    await click(byText(".drawer .part-of button", "Herauslösen"));
+    const freed = store.project!.reqs.find((r) => r.title === "PDF herunterladen")!;
+    expect(freed.parentId).toBe(null);
+    expect(freed.key).toMatch(/^REQ-\d+$/);
+    expect($$(".row.part").length).toBe(1);
+    // Papierkorb nimmt die große Anforderung mit ihrem Teil, Wiederherstellen bringt beide zurück.
+    await click(byText(".row", "Vertrag ansehen"));
+    await click(byText(".drawer button", "Mit 1 Teilen in den Papierkorb"));
+    expect(store.project!.reqs.filter((r) => r.deletedAt).map((r) => r.key).sort()).toEqual(["REQ-002", "REQ-002.1"]);
+    await act(() => store.restoreReq(big.id));
+    expect(store.project!.reqs.filter((r) => r.deletedAt).length).toBe(0);
+  });
+
+  it("zeigt die User Story verständlich und das Lastenheft je Frontend", async () => {
+    await click(byText(".row", "Benutzer anlegen"));
+    const story = $(".drawer .story")!;
+    expect(story.textContent).toContain("Wer?");
+    expect(story.textContent).toContain("Was will die Person tun?");
+    expect(story.textContent).toContain("Wozu?");
+    const inputs = [...story.querySelectorAll("input")] as HTMLInputElement[];
+    await type(inputs[0], "Admin");
+    await type(inputs[1], "Benutzer anlegen");
+    await type(inputs[2], "neue Kollegen sofort arbeiten können");
+    expect($(".drawer .story-out")!.textContent).toBe("Als Admin möchte ich Benutzer anlegen, damit neue Kollegen sofort arbeiten können.");
+    await click(byText(".actions button", "Lastenheft"));
+    expect($$(".paper .fe-title").map((e) => e.textContent)).toEqual(["Admin", "Kunde"]);
+    await click(byText(".report-bar .chip", "Kunde"));
+    expect($$(".paper .fe-title").length).toBe(0);
+    expect($(".paper .sub")!.textContent).toBe("Version v1.0 · Kunde");
+    expect($(".paper")!.textContent).not.toContain("Benutzer anlegen");
+    expect($$(".paper .item.part").length).toBe(1);
+    await click(byText(".report-bar button", "Schließen"));
+  });
 });

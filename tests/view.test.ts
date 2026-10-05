@@ -35,7 +35,7 @@ describe("Liste, Board, Tabelle", () => {
     const g = groupByMenu(ix, liveReqs(p));
     expect(g.map((x) => x.name)).toEqual(["Dashboard", "Konto", "Profil", "Passwort ändern", "Zwei-Faktor-Anmeldung", "Übersicht", "Bestelldetail", "Einstellungen"]);
     expect(g.find((x) => x.name === "Passwort ändern")!.parentPath).toBe("Konto / Sicherheit");
-    expect(keys(g.find((x) => x.name === "Einstellungen")!.items)).toEqual(["REQ-011", "REQ-010"]);
+    expect(keys(g.find((x) => x.name === "Einstellungen")!.items.map((i) => i.r))).toEqual(["REQ-011", "REQ-010"]);
   });
   it("bildet Spalten je Phase und eine für nicht Eingeplantes", () => {
     const cols = boardColumns(p, liveReqs(p), p.versions[0].id);
@@ -90,9 +90,9 @@ describe("Lastenheft", () => {
   it("stellt eine Version nach Phasen zusammen", () => {
     const r = report(p, ix, p.versions[0].id)!;
     expect(r).toMatchObject({ version: "v1.0", total: 6, must: 4, done: 1, preOpen: 1 });
-    expect(r.phases.map((x) => x.name)).toEqual(["Phase 1 · Grundgerüst", "Phase 2 · Kernfunktionen", "Phase 3 · Feinschliff"]);
-    expect(r.phases[0].items[0].storyText).toBe("Als Mitarbeiter eines Firmenkunden möchte ich mich mit meinem Firmenkonto anmelden, damit ich kein separates Passwort brauche.");
-    expect(r.phases[0].items[0].preList).toBe("SSO-Schnittstelle zum Identity Provider (offen) · Datenschutzfreigabe durch DSB (erfüllt)");
+    expect(r.sections[0].phases.map((x) => x.name)).toEqual(["Phase 1 · Grundgerüst", "Phase 2 · Kernfunktionen", "Phase 3 · Feinschliff"]);
+    expect(r.sections[0].phases[0].items[0].storyText).toBe("Als Mitarbeiter eines Firmenkunden möchte ich mich mit meinem Firmenkonto anmelden, damit ich kein separates Passwort brauche.");
+    expect(r.sections[0].phases[0].items[0].preList).toBe("SSO-Schnittstelle zum Identity Provider (offen) · Datenschutzfreigabe durch DSB (erfüllt)");
     expect(r.pre.length).toBe(3);
     expect(report(p, ix, "gibtsnicht")).toBe(null);
   });

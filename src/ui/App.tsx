@@ -6,7 +6,7 @@ import { filterReqs, menuIndex } from "../domain/view";
 import type { Theme } from "../storage/local";
 import { Detail } from "./Detail";
 import { NewProject, ProjectsDialog, SettingsDialog, TrashDialog, VersionsDialog } from "./Dialogs";
-import { fmtDateTime, val } from "./parts";
+import { Dialog, fmtDateTime, val } from "./parts";
 import { Report } from "./Report";
 import { Sidebar } from "./Sidebar";
 import { BoardView, Filters, ListView, OverviewView, PrereqView, TableView } from "./Views";
@@ -92,7 +92,10 @@ export function App() {
 
   const ix = menuIndex(p);
   const view = s.view;
-  const reqs = filterReqs(p, ix, { menuId: ui.selMenu, prio: ui.fPrio, status: ui.fStatus, search: ui.search, gap: ui.gap });
+  const reqs = filterReqs(p, ix, { feId: s.selFe, menuId: ui.selMenu, prio: ui.fPrio, status: ui.fStatus, search: ui.search, gap: ui.gap });
+  // Projekte aus der Zeit vor den Frontends: einmal fragen, ob die Hauptmenüpunkte Frontends sind.
+  const askFrontends = !p.feAsked && !ui.dialog && !ui.report;
+  const rootNames = askFrontends ? p.menu.filter((m) => !m.parent).map((m) => m.name) : [];
   const sel = p.reqs.find((r) => r.id === ui.selReq && !r.deletedAt) ?? null;
   const theme = s.prefs.theme ?? "auto";
   const listy = view === "liste" || view === "board" || view === "tabelle";
@@ -188,6 +191,28 @@ export function App() {
         {ui.dialog === "projects" && <ProjectsDialog s={s} />}
         {ui.dialog === "trash" && <TrashDialog s={s} p={p} />}
         {ui.dialog === "settings" && <SettingsDialog s={s} />}
+        {askFrontends && (
+          <Dialog title="Neu: Frontends" onClose={() => s.answerFrontends(false)}>
+            <span>
+              Ein Projekt kann jetzt mehrere Frontends haben, etwa Admin, Kunde und Dienstleister, jedes mit eigenem Menübaum. Sind die Hauptmenüpunkte dieses Projekts solche Frontends?
+            </span>
+            <div class="vbox">
+              <span class="label">Hauptmenüpunkte von „{p.name}“</span>
+              <span>{rootNames.join(" · ")}</span>
+            </div>
+            <div class="hrow">
+              <button type="button" class="btn primary" onClick={() => s.answerFrontends(true)}>
+                Ja, als Frontends übernehmen
+              </button>
+              <button type="button" class="btn" onClick={() => s.answerFrontends(false)}>
+                Nein, als Menüpunkte lassen
+              </button>
+            </div>
+            <span class="note">
+              Bei Ja wird jeder Hauptmenüpunkt ein Frontend, seine Unterpunkte werden dessen Hauptmenü. Alle Anforderungen bleiben erhalten. Bei Nein liegt alles in einem Frontend „Allgemein“. Du kannst Frontends später jederzeit anlegen, umbenennen und löschen. Diese Frage erscheint je Projekt nur einmal.
+            </span>
+          </Dialog>
+        )}
       </div>
       {ui.report && <Report s={s} p={p} ix={ix} versionId={ui.report} />}
       {ui.toast && <div class="toast">{ui.toast}</div>}

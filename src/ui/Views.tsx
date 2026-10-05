@@ -3,7 +3,7 @@
 import { useState } from "preact/hooks";
 import type { Store } from "../app/store";
 import { PRIO, PRIOS, STATUS, STATUSES, type PreType, type Project, type Req } from "../domain/types";
-import { boardColumns, GAPS, groupByMenu, liveReqs, overview, reqInfo, sortTable, TABLE_HEADERS, type MenuIndex, type Progress } from "../domain/view";
+import { boardColumns, GAPS, groupByMenu, liveReqs, overview, reqInfo, sortTable, tableHeaders, type MenuIndex, type Progress, type ReqInfo } from "../domain/view";
 import { Check, Chip, PrioBadge, StatusDot, val } from "./parts";
 
 interface Props {
@@ -20,18 +20,41 @@ function PreNote({ links, openN }: { links: number; openN: number }) {
   return <span class={"mono " + (openN ? "warn" : "dim")}>{openN ? "⚠ " + openN + " offen" : "✓ " + links + "/" + links}</span>;
 }
 
+/** „2/5 Teile“ an einer großen Anforderung, mit Warnung, wenn sie trotz offener Teile auf Erledigt steht. */
+function PartsNote({ i }: { i: ReqInfo }) {
+  if (!i.parts.length) return null;
+  return (
+    <span class={"mono " + (i.partsWarn ? "warn" : "dim")} title={i.partsWarn ? "Steht auf Erledigt, obwohl Teile noch offen sind" : "Erledigte Teilanforderungen"} style="white-space:nowrap">
+      {i.partsWarn ? "⚠ " : ""}
+      {i.partsDone}/{i.parts.length} Teile
+    </span>
+  );
+}
+
+/** Hinweis auf weitere betroffene Frontends. */
+function AlsoNote({ i }: { i: ReqInfo }) {
+  if (!i.also.length) return null;
+  return (
+    <span class="tag" title={"Betrifft auch: " + i.also.join(", ")}>
+      + {i.also.join(", ")}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------- Filter
 
 export function Filters({ s, ix, count }: { s: Store; ix: MenuIndex; count: number }) {
   const ui = s.ui;
   const scoped = ui.selMenu && ix.byId.has(ui.selMenu);
+  const fe = ix.feName(s.selFe);
   const gap = GAPS.find((g) => g.key === ui.gap);
+  const scope = scoped ? (fe && ix.multi ? fe + " › " : "") + ix.pathOf(ui.selMenu) : fe && ix.multi ? fe : "Alle Menüpunkte";
   return (
     <div class="filters">
       <div class="scope">
         <span class="label">Bereich</span>
         <b>
-          {scoped ? ix.pathOf(ui.selMenu) : "Alle Menüpunkte"} <span class="mono dim" style="font-size:12px;font-weight:400">· {count} Anforderungen</span>
+          {scope} <span class="mono dim" style="font-size:12px;font-weight:400">· {count} Anforderungen</span>
         </b>
       </div>
       {gap && (
@@ -82,21 +105,23 @@ export function ListView({ s, p, ix, reqs }: Props) {
     <div class="list">
       {groups.map((g) => (
         <section key={g.id}>
-          <div class="group-head">
+          <div class={"group-head" + (g.color ? " colored c-" + g.color : "")}>
             <span style="font-weight:600">{g.name}</span>
             <span class="mono dim">{g.parentPath}</span>
             <span class="mono dim" style="margin-left:auto">
               {g.items.length}
             </span>
           </div>
-          {g.items.map((r) => {
+          {g.items.map(({ r, part }) => {
             const i = reqInfo(p, ix, r);
             return (
-              <div key={r.id} class={"row" + (s.ui.selReq === r.id ? " on" : "")} onClick={open(s, r.id)}>
+              <div key={r.id} class={"row" + (s.ui.selReq === r.id ? " on" : "") + (part ? " part" : "") + (g.color ? " colored c-" + g.color : "")} onClick={open(s, r.id)}>
                 <span class="mono muted key">{r.key}</span>
                 <PrioBadge prio={r.prio} />
                 <span class={"cut title" + (r.title ? "" : " untitled")}>{r.title || "Ohne Titel"}</span>
                 <div class="meta">
+                  <AlsoNote i={i} />
+                  <PartsNote i={i} />
                   <PreNote links={i.links.length} openN={i.preOpen} />
                   <span class="mono muted vp" style="white-space:nowrap">
                     {i.vp}
@@ -176,7 +201,7 @@ export function BoardView({ s, p, ix, reqs }: Props) {
               return (
                 <div
                   key={r.id}
-                  class={"card" + (i.preOpen ? " blocked" : "") + (ui.dragId === r.id ? " dragging" : "")}
+                  class={"card" + (i.preOpen ? " blocked" : "") + (ui.dragId === r.id ? " dragging" : "") + (i.color ? " colored c-" + i.color : "")}
                   draggable
                   onDragStart={(e) => {
                     e.dataTransfer?.setData("text/plain", r.id);
@@ -196,9 +221,11 @@ export function BoardView({ s, p, ix, reqs }: Props) {
                   <span class={r.title ? "" : "untitled"} style="text-wrap:pretty">
                     {r.title || "Ohne Titel"}
                   </span>
+                  {i.parent && <span class="tiny dim cut">Teil von {i.parent.key}</span>}
                   <div class="tiny dim" style="display:flex;gap:8px;align-items:center">
                     <span class="cut">{i.path}</span>
-                    <span style="margin-left:auto;flex:none">
+                    <span style="margin-left:auto;flex:none;display:flex;gap:8px">
+                      <PartsNote i={i} />
                       <PreNote links={i.links.length} openN={i.preOpen} />
                     </span>
                   </div>
@@ -226,15 +253,17 @@ export function BoardView({ s, p, ix, reqs }: Props) {
 
 export function TableView({ s, p, ix, reqs }: Props) {
   const ui = s.ui;
-  const rows = sortTable(p, ix, reqs, ui.sortKey, ui.sortDir);
+  const headers = tableHeaders(ix.multi);
+  const sortKey = headers.some(([k]) => k === ui.sortKey) ? ui.sortKey : "key";
+  const rows = sortTable(p, ix, reqs, sortKey, ui.sortDir);
   return (
     <div class="table-wrap">
       <table class="t">
         <thead>
           <tr>
-            {TABLE_HEADERS.map(([k, l]) => (
-              <th key={k} class={ui.sortKey === k ? "on" : ""} onClick={() => s.set({ sortKey: k, sortDir: ui.sortKey === k ? (-ui.sortDir as 1 | -1) : 1 })}>
-                {l} {ui.sortKey === k ? (ui.sortDir > 0 ? "↑" : "↓") : ""}
+            {headers.map(([k, l]) => (
+              <th key={k} class={sortKey === k ? "on" : ""} onClick={() => s.set({ sortKey: k, sortDir: sortKey === k ? (-ui.sortDir as 1 | -1) : 1 })}>
+                {l} {sortKey === k ? (ui.sortDir > 0 ? "↑" : "↓") : ""}
               </th>
             ))}
           </tr>
@@ -242,12 +271,15 @@ export function TableView({ s, p, ix, reqs }: Props) {
         <tbody>
           {rows.map((r) => {
             const i = reqInfo(p, ix, r);
+            const m = r.menuId ? ix.byId.get(r.menuId) : undefined;
             return (
               <tr key={r.id} class={ui.selReq === r.id ? "on" : ""} onClick={open(s, r.id)}>
                 <td class="mono muted" style="white-space:nowrap">
                   {r.key}
                 </td>
-                <td class={r.title ? "" : "untitled"}>{r.title || "Ohne Titel"}</td>
+                <td class={r.title ? "" : "untitled"}>
+                  {r.title || "Ohne Titel"} <PartsNote i={i} />
+                </td>
                 <td>
                   <PrioBadge prio={r.prio} />
                 </td>
@@ -257,7 +289,16 @@ export function TableView({ s, p, ix, reqs }: Props) {
                     {STATUS[r.status].label}
                   </span>
                 </td>
-                <td class="muted small">{i.path}</td>
+                {ix.multi && (
+                  <td class="muted small" style="white-space:nowrap">
+                    {i.feName}
+                    {i.also.length > 0 && <span class="dim"> + {i.also.join(", ")}</span>}
+                  </td>
+                )}
+                <td class="muted small">
+                  {i.color && <i class={"cdot c-" + i.color} style="margin-right:6px" />}
+                  {m ? ix.pathOf(m.id) : "Ohne Menüpunkt"}
+                </td>
                 <td class="mono muted" style="white-space:nowrap">
                   {i.version ? i.version.name : "—"}
                 </td>
@@ -311,10 +352,10 @@ function PreSection({ s, p, type }: { s: Store; p: Project; type: PreType }) {
               {linked.length ? linked.length + "× verknüpft" : "nicht verknüpft"}
             </span>
             <div style="display:flex;gap:2px">
-              <button type="button" class="btn sm" style="padding:2px 7px;border-color:var(--line);color:var(--muted)" title="Typ wechseln" onClick={() => s.editPre(q.id, (x) => (x.type = x.type === "tech" ? "user" : "tech"))}>
+              <button type="button" class="btn sm quiet" style="padding:2px 7px" title="Typ wechseln" onClick={() => s.editPre(q.id, (x) => (x.type = x.type === "tech" ? "user" : "tech"))}>
                 ⇄
               </button>
-              <button type="button" class="btn sm danger" style="padding:2px 7px;border-color:var(--line);color:var(--muted)" title="Löschen" onClick={() => s.removePre(q.id)}>
+              <button type="button" class="btn sm quiet danger-hover" style="padding:2px 7px" title="Löschen" onClick={() => s.removePre(q.id)}>
                 ×
               </button>
             </div>
@@ -352,9 +393,9 @@ export function PrereqView({ s, p }: { s: Store; p: Project }) {
 
 const pct = (n: number, total: number) => (total ? Math.round((n / total) * 100) : 0);
 
-function ProgRow({ name, g, sub, head }: { name: string; g: Progress; sub?: boolean; head?: boolean }) {
+function ProgRow({ name, g, sub, head, onClick }: { name: string; g: Progress; sub?: boolean; head?: boolean; onClick?: () => void }) {
   return (
-    <div class={"prog" + (sub ? " sub" : "") + (head ? " head" : "")}>
+    <div class={"prog" + (sub ? " sub" : "") + (head ? " head" : "") + (onClick ? " link" : "")} onClick={onClick} title={onClick ? "Anforderungen zeigen" : undefined}>
       <span class="cut" style={head ? "font-weight:600" : ""} title={name}>
         {name}
       </span>
@@ -370,6 +411,20 @@ function ProgRow({ name, g, sub, head }: { name: string; g: Progress; sub?: bool
     </div>
   );
 }
+
+const Legend = () => (
+  <span class="legend small muted" style="margin-left:auto">
+    <span>
+      <i class="d" /> erledigt
+    </span>
+    <span>
+      <i class="w" /> in Arbeit
+    </span>
+    <span>
+      <i /> offen
+    </span>
+  </span>
+);
 
 export function OverviewView({ s, p }: { s: Store; p: Project }) {
   const o = overview(p);
@@ -409,20 +464,25 @@ export function OverviewView({ s, p }: { s: Store; p: Project }) {
         </div>
       </div>
 
+      {o.frontends.length > 1 && (
+        <section class="box">
+          <div class="box-head">
+            <b>Fortschritt je Frontend</b>
+            <Legend />
+          </div>
+          {o.frontends.map((f) => (
+            <ProgRow key={f.id} name={f.name} g={f.p} onClick={() => s.set({ selFe: f.id, selMenu: null, view: "liste", gap: null, fPrio: "", fStatus: "", search: "" })} />
+          ))}
+          <div class="note" style="padding:10px 16px">
+            Gezählt wird jede Anforderung in dem Frontend, in dem sie liegt. „Betrifft auch“ zählt hier nicht mit.
+          </div>
+        </section>
+      )}
+
       <section class="box">
         <div class="box-head">
           <b>Fortschritt je Version und Phase</b>
-          <span class="legend small muted" style="margin-left:auto">
-            <span>
-              <i class="d" /> erledigt
-            </span>
-            <span>
-              <i class="w" /> in Arbeit
-            </span>
-            <span>
-              <i /> offen
-            </span>
-          </span>
+          <Legend />
         </div>
         {o.versions.map((v) => (
           <div key={v.id}>
@@ -439,7 +499,7 @@ export function OverviewView({ s, p }: { s: Store; p: Project }) {
           </div>
         )}
         <div class="note" style="padding:10px 16px">
-          Won’t-Anforderungen zählen nicht mit. ⚠ zeigt die Zahl offener Voraussetzungen.
+          Won’t-Anforderungen zählen nicht mit. Große Anforderungen und ihre Teile zählen jeweils einzeln. ⚠ zeigt die Zahl offener Voraussetzungen.
         </div>
       </section>
 
@@ -456,7 +516,7 @@ export function OverviewView({ s, p }: { s: Store; p: Project }) {
             type="button"
             class={"gap-row" + (g.count ? "" : " zero")}
             disabled={!g.count}
-            onClick={() => s.set({ gap: g.key, view: "liste", selMenu: null, fPrio: "", fStatus: "", search: "" })}
+            onClick={() => s.set({ gap: g.key, view: "liste", selFe: null, selMenu: null, fPrio: "", fStatus: "", search: "" })}
           >
             <b class={g.count ? "warn" : ""}>{g.count}</b>
             <span>

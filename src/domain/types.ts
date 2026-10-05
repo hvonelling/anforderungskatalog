@@ -8,10 +8,25 @@ export type Prio = "M" | "S" | "C" | "W";
 export type Status = "open" | "wip" | "done";
 export type PreType = "tech" | "user";
 
+/** Farben für Menüpunkte. Die Farbwerte stehen je Design in styles.css (--c-<Schlüssel>). */
+export const COLORS = ["rot", "orange", "gelb", "gruen", "tuerkis", "blau", "violett", "pink"] as const;
+export type Color = (typeof COLORS)[number];
+export const COLOR_LABEL: Record<Color, string> = { rot: "Rot", orange: "Orange", gelb: "Gelb", gruen: "Grün", tuerkis: "Türkis", blau: "Blau", violett: "Violett", pink: "Pink" };
+
+/** Ein Frontend des Produkts (Admin, Kunde, Dienstleister …) mit eigenem Menübaum. */
+export interface Frontend {
+  id: string;
+  name: string;
+  o: number;
+  u: number;
+}
 export interface MenuNode {
   id: string;
   name: string;
   parent: string | null;
+  /** Frontend, zu dem der Baum gehört. Maßgeblich ist der Hauptmenüpunkt; Unterpunkte führen den Wert nur mit. */
+  fe: string | null;
+  color: Color | null;
   /** Reihenfolge unter Geschwistern */
   o: number;
   u: number;
@@ -61,9 +76,16 @@ export interface Story {
 }
 export interface Req {
   id: string;
+  /** REQ-012, Teilanforderungen REQ-012.1 */
   key: string;
   title: string;
   menuId: string | null;
+  /** Frontend. Mit Menüpunkt folgt es dessen Baum, ohne Menüpunkt gilt dieser Wert. */
+  fe: string | null;
+  /** Weitere Frontends, die diese Anforderung betrifft */
+  also: string[];
+  /** gesetzt = Teilanforderung dieser Anforderung (nur eine Ebene). Ort (Menüpunkt, Frontend) folgt dann der großen Anforderung. */
+  parentId: string | null;
   prio: Prio;
   status: Status;
   versionId: string | null;
@@ -85,6 +107,10 @@ export interface Project {
   name: string;
   /** höchste vergebene laufende Nummer (REQ-007 → 7) */
   seq: number;
+  /** nie leer (außer bei gelöschten Projekten) */
+  frontends: Frontend[];
+  /** false = Projekt aus der Zeit vor den Frontends; die App fragt einmal, ob die Hauptmenüpunkte Frontends werden sollen */
+  feAsked: boolean;
   menu: MenuNode[];
   versions: Version[];
   prereqs: Prereq[];

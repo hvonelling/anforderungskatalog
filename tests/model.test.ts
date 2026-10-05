@@ -85,8 +85,8 @@ describe("Zusammenführen", () => {
   });
   it("führt neue Datensätze beider Geräte in fester Reihenfolge zusammen", () => {
     const base = demoProject(1000);
-    const a = edit(base, 2000, (x) => x.menu.push({ id: "mA", name: "Von A", parent: null, o: nextOrder(x.menu), u: 0 }));
-    const b = edit(base, 2100, (x) => x.menu.push({ id: "mB", name: "Von B", parent: null, o: nextOrder(x.menu), u: 0 }));
+    const a = edit(base, 2000, (x) => x.menu.push({ id: "mA", name: "Von A", parent: null, fe: null, color: null, o: nextOrder(x.menu), u: 0 }));
+    const b = edit(base, 2100, (x) => x.menu.push({ id: "mB", name: "Von B", parent: null, fe: null, color: null, o: nextOrder(x.menu), u: 0 }));
     const ab = mergeProject(a, b),
       ba = mergeProject(b, a);
     expect(ab.menu.map((m) => m.id)).toEqual(ba.menu.map((m) => m.id));
@@ -106,10 +106,10 @@ describe("Zusammenführen", () => {
   it("vergibt bei doppelter Nummer eine neue für die jüngere Anforderung", () => {
     const base = demoProject(1000);
     const a = edit(base, 2000, (x) => {
-      newReq(x, null, 2000).title = "Von A";
+      newReq(x, null, null, 2000).title = "Von A";
     });
     const b = edit(base, 3000, (x) => {
-      newReq(x, null, 3000).title = "Von B";
+      newReq(x, null, null, 3000).title = "Von B";
     });
     expect(a.reqs.at(-1)!.key).toBe("REQ-012");
     expect(b.reqs.at(-1)!.key).toBe("REQ-012");

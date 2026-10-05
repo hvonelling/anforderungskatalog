@@ -1,7 +1,7 @@
 // Anlegen, Stempeln, Zusammenführen, Import und Export von Projekten.
 
-import type { Attachment, MenuNode, Phase, Prereq, Project, Req, Status, Prio, Version } from "./types";
-import { PRIO, STATUS } from "./types";
+import type { Attachment, Color, Frontend, MenuNode, Phase, Prereq, Project, Req, Status, Prio, Version } from "./types";
+import { COLORS, PRIO, STATUS } from "./types";
 
 export function uid(prefix = ""): string {
   const abc = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -15,18 +15,29 @@ export function uid(prefix = ""): string {
 export const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o)) as T;
 export const keyOf = (n: number) => "REQ-" + String(n).padStart(3, "0");
 export const nextOrder = (list: { o: number }[]) => list.reduce((m, x) => Math.max(m, x.o), -1) + 1;
+/** Kennungen so vergleichen, dass REQ-012.2 vor REQ-012.10 steht. */
+export const cmpKey = (a: string, b: string) => a.localeCompare(b, "de", { numeric: true });
+
+/**
+ * Feste Kennung des ersten Frontends. Projekte aus der Zeit vor den Frontends bekommen es beim Laden;
+ * weil die Kennung fest ist, entsteht es auf zwei Geräten nicht doppelt.
+ */
+export const MAIN_FE = "fmain";
+const mainFrontend = (): Frontend => ({ id: MAIN_FE, name: "Allgemein", o: 0, u: 0 });
 
 export function emptyProject(name: string, now = Date.now()): Project {
-  return { format: 1, id: uid("j"), name, seq: 0, menu: [], versions: [], prereqs: [], reqs: [], gone: {}, createdAt: now, deletedAt: null, u: now };
+  return { format: 1, id: uid("j"), name, seq: 0, frontends: [mainFrontend()], feAsked: true, menu: [], versions: [], prereqs: [], reqs: [], gone: {}, createdAt: now, deletedAt: null, u: now };
 }
 
-export function newReq(p: Project, menuId: string | null, now = Date.now()): Req {
-  p.seq += 1;
-  const r: Req = {
+function blankReq(now: number): Req {
+  return {
     id: uid("r"),
-    key: keyOf(p.seq),
+    key: "",
     title: "",
-    menuId,
+    menuId: null,
+    fe: null,
+    also: [],
+    parentId: null,
     prio: "S",
     status: "open",
     versionId: null,
@@ -41,8 +52,37 @@ export function newReq(p: Project, menuId: string | null, now = Date.now()): Req
     deletedAt: null,
     u: now,
   };
+}
+
+export function newReq(p: Project, menuId: string | null, fe: string | null = null, now = Date.now()): Req {
+  p.seq += 1;
+  const r = { ...blankReq(now), key: keyOf(p.seq), menuId, fe };
   p.reqs.push(r);
   return r;
+}
+
+/** Teilanforderung anlegen. Ort folgt der großen Anforderung, Priorität und Planung werden als Startwert übernommen. */
+export function newPart(p: Project, parentId: string, title: string, now = Date.now()): Req | null {
+  const par = p.reqs.find((x) => x.id === parentId);
+  if (!par || par.parentId) return null;
+  const r = { ...blankReq(now), title, parentId, menuId: par.menuId, fe: par.fe, prio: par.prio, versionId: par.versionId, phaseId: par.phaseId };
+  p.reqs.push(r);
+  tidy(p); // vergibt die Unternummer
+  return r;
+}
+
+/** Bestehende Anforderung zu einem Teil machen (parentId) oder herauslösen (null). */
+export function setParent(p: Project, reqId: string, parentId: string | null) {
+  const r = p.reqs.find((x) => x.id === reqId);
+  if (!r) return;
+  if (parentId) {
+    const par = p.reqs.find((x) => x.id === parentId);
+    // Nur eine Ebene: weder Teile von Teilen noch große Anforderungen als Teil.
+    if (!par || par.id === r.id || par.parentId || p.reqs.some((x) => x.parentId === r.id)) return;
+  }
+  r.parentId = parentId;
+  r.key = ""; // neue Nummer passend zur neuen Stellung
+  tidy(p);
 }
 
 /** Bezeichnung von Version und Phase für den Verlauf. */
@@ -72,6 +112,60 @@ export function unplan(p: Project, pred: (r: Req) => boolean, now = Date.now()) 
   }
 }
 
+// ---------------------------------------------------------------- Frontends
+
+/**
+ * Hauptmenüpunkte zu Frontends machen: Jeder Hauptpunkt wird ein Frontend, seine Unterpunkte
+ * werden dessen Hauptmenü. Anforderungen direkt am Hauptpunkt bleiben im neuen Frontend ohne Menüpunkt.
+ */
+export function rootsToFrontends(p: Project) {
+  const before = p.frontends.map((f) => f.id);
+  const roots = p.menu.filter((m) => !m.parent);
+  for (const root of roots) {
+    const fe: Frontend = { id: uid("f"), name: root.name, o: nextOrder(p.frontends), u: 0 };
+    p.frontends.push(fe);
+    // Die Unterpunkte werden Hauptmenü des neuen Frontends; tidy reicht das Frontend im Baum nach unten durch.
+    for (const m of p.menu)
+      if (m.parent === root.id) {
+        m.parent = null;
+        m.fe = fe.id;
+      }
+    for (const r of p.reqs)
+      if (r.menuId === root.id) {
+        r.menuId = null;
+        r.fe = fe.id;
+      }
+    p.menu = p.menu.filter((m) => m.id !== root.id);
+  }
+  p.feAsked = true;
+  tidy(p);
+  // Frühere Frontends, in denen nun nichts mehr liegt, entfallen.
+  if (roots.length) {
+    p.frontends = p.frontends.filter((f) => !before.includes(f.id) || p.reqs.some((r) => r.fe === f.id) || p.menu.some((m) => m.fe === f.id));
+    tidy(p);
+  }
+}
+
+/**
+ * Frontend löschen. Sein Menübaum geht nicht verloren: Er hängt danach als Hauptmenüpunkt
+ * mit dem Namen des Frontends im ersten verbleibenden Frontend. Das letzte Frontend bleibt immer.
+ */
+export function removeFrontend(p: Project, id: string) {
+  const fe = p.frontends.find((f) => f.id === id);
+  const target = p.frontends.find((f) => f.id !== id);
+  if (!fe || !target) return;
+  const roots = p.menu.filter((m) => !m.parent && m.fe === id);
+  const loose = p.reqs.filter((r) => !r.menuId && r.fe === id);
+  if (roots.length || loose.length) {
+    const node: MenuNode = { id: uid("m"), name: fe.name, parent: null, fe: target.id, color: null, o: nextOrder(p.menu), u: 0 };
+    p.menu.push(node);
+    for (const m of roots) m.parent = node.id;
+    for (const r of loose) r.menuId = node.id;
+  }
+  p.frontends = p.frontends.filter((f) => f.id !== id);
+  tidy(p);
+}
+
 // ---------------------------------------------------------------- Stempeln
 
 const noU = (o: unknown) => JSON.stringify(o, (k, v) => (k === "u" ? undefined : v));
@@ -91,6 +185,7 @@ export function stamp(prev: Project, next: Project, now = Date.now()) {
     }
     for (const id of pm.keys()) gone[id] = now;
   };
+  col(prev.frontends, next.frontends, noU);
   col(prev.menu, next.menu, noU);
   col(prev.prereqs, next.prereqs, noU);
   col(prev.reqs, next.reqs, noU);
@@ -150,6 +245,8 @@ export function mergeProject(a: Project, b: Project): Project {
     id: a.id,
     name: head.name,
     seq: Math.max(a.seq, b.seq),
+    frontends: mergeCol(a.frontends, b.frontends, gone).sort(byOrder),
+    feAsked: a.feAsked || b.feAsked,
     menu: mergeCol(a.menu, b.menu, gone).sort(byOrder),
     versions,
     prereqs: mergeCol(a.prereqs, b.prereqs, gone).sort(byOrder),
@@ -162,10 +259,14 @@ export function mergeProject(a: Project, b: Project): Project {
   return tidy(clone(out));
 }
 
-/** Verweise bereinigen und doppelte Kennungen auflösen. Ändert keine Zeitstempel. */
+/**
+ * Verweise bereinigen, abgeleitete Angaben nachführen und doppelte Kennungen auflösen.
+ * Das Ergebnis hängt nur vom Inhalt ab, damit zwei Geräte aus demselben Stand dasselbe machen.
+ */
 export function tidy(p: Project): Project {
   if (p.deletedAt) {
     // Gelöschtes Projekt: nur die Marke behalten.
+    p.frontends = [];
     p.menu = [];
     p.versions = [];
     p.prereqs = [];
@@ -173,21 +274,73 @@ export function tidy(p: Project): Project {
     p.gone = {};
     return p;
   }
-  const menuIds = new Set(p.menu.map((m) => m.id));
-  for (const m of p.menu) if (m.parent && !menuIds.has(m.parent)) m.parent = null;
+  // Frontends: mindestens eines, Verweise gültig.
+  if (!p.frontends.length) p.frontends.push(mainFrontend());
+  const feIds = new Set(p.frontends.map((f) => f.id));
+  const firstFe = p.frontends[0].id;
+
+  // Menü: Unterpunkte ohne Elternknoten an die Wurzel, Frontend vom Hauptpunkt nach unten durchreichen.
+  const menu = new Map(p.menu.map((m) => [m.id, m]));
+  for (const m of p.menu) if (m.parent && !menu.has(m.parent)) m.parent = null;
+  const feOf = (m: MenuNode): string => {
+    let root = m;
+    for (let i = 0; i < 50 && root.parent; i++) root = menu.get(root.parent) ?? root;
+    return root.fe && feIds.has(root.fe) ? root.fe : firstFe;
+  };
+  const feByMenu = new Map(p.menu.map((m) => [m.id, feOf(m)]));
+  for (const m of p.menu) m.fe = feByMenu.get(m.id)!;
+
   p.reqs.sort((x, y) => x.createdAt - y.createdAt || (x.id < y.id ? -1 : 1));
+  const reqs = new Map(p.reqs.map((r) => [r.id, r]));
+
+  // Teilanforderungen: nur eine Ebene, Ort folgt der großen Anforderung.
   for (const r of p.reqs) {
-    const n = Number(/^REQ-(\d+)$/.exec(r.key)?.[1] ?? 0);
+    if (!r.parentId) continue;
+    const par = reqs.get(r.parentId);
+    if (!par || par === r || par.parentId) r.parentId = null;
+  }
+  for (const r of p.reqs) {
+    const par = r.parentId ? reqs.get(r.parentId)! : null;
+    if (par) r.menuId = par.menuId;
+  }
+  for (const r of p.reqs) {
+    const src = r.parentId ? reqs.get(r.parentId)! : r;
+    r.fe = src.menuId && feByMenu.has(src.menuId) ? feByMenu.get(src.menuId)! : src.fe && feIds.has(src.fe) ? src.fe : firstFe;
+    if (r.also.length) r.also = [...new Set(r.also)].filter((f) => feIds.has(f) && f !== r.fe);
+  }
+  // Nach dem Durchreichen: Teile bekommen genau das Frontend der großen Anforderung.
+  for (const r of p.reqs) if (r.parentId) r.fe = reqs.get(r.parentId)!.fe;
+
+  // Kennungen. Zwei Geräte können ohne Verbindung dieselbe Nummer vergeben haben: die jüngere Anforderung bekommt eine neue.
+  for (const r of p.reqs) {
+    const n = Number(/^REQ-(\d+)/.exec(r.key)?.[1] ?? 0);
     if (n > p.seq) p.seq = n;
   }
-  // Zwei Geräte können ohne Verbindung dieselbe Nummer vergeben haben: die jüngere Anforderung bekommt eine neue.
   const used = new Set<string>();
   for (const r of p.reqs) {
-    if (used.has(r.key) || !r.key) {
+    if (r.parentId) continue;
+    // Eine Unternummer an einer eigenständigen Anforderung stammt von einem herausgelösten Teil.
+    if (!r.key || used.has(r.key) || /^REQ-\d+\.\d+$/.test(r.key)) {
       p.seq += 1;
       r.key = keyOf(p.seq);
     }
     used.add(r.key);
+  }
+  const subNo = (key: string) => Number(/\.(\d+)$/.exec(key)?.[1] ?? 0);
+  for (const par of p.reqs) {
+    if (par.parentId) continue;
+    const parts = p.reqs.filter((r) => r.parentId === par.id);
+    if (!parts.length) continue;
+    const prefix = par.key + ".";
+    let max = parts.reduce((m, r) => Math.max(m, subNo(r.key)), 0);
+    for (const r of parts) {
+      const want = subNo(r.key) ? prefix + subNo(r.key) : "";
+      if (!want || used.has(want)) {
+        max += 1;
+        r.key = prefix + max;
+      } else r.key = want;
+      used.add(r.key);
+    }
   }
   return p;
 }
@@ -214,18 +367,36 @@ export const sameProject = (a: Project, b: Project) => canon(a) === canon(b);
 const str = (v: unknown, d = "") => (typeof v === "string" ? v : d);
 const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const arr = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? (v.filter((x) => x && typeof x === "object") as Record<string, unknown>[]) : []);
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
-/** Beliebig geladenen Stand in ein gültiges Projekt überführen. Wirft, wenn es keines ist. */
+/**
+ * Beliebig geladenen Stand in ein gültiges Projekt überführen. Wirft, wenn es keines ist.
+ * Ältere Stände (ohne Frontends, Farben, Teilanforderungen) werden dabei ohne Verlust ergänzt.
+ */
 export function normalizeProject(raw: unknown, now = Date.now()): Project {
   const j = raw as Record<string, unknown>;
   if (!j || typeof j !== "object" || !Array.isArray(j.reqs) || !Array.isArray(j.menu) || !Array.isArray(j.versions) || !Array.isArray(j.prereqs))
     throw new Error("Datei ist kein Anforderungskatalog.");
+  const hasFrontends = Array.isArray(j.frontends);
   const p: Project = {
     format: 1,
     id: str(j.id) || uid("j"),
     name: str(j.name) || str(j.product) || "Projekt",
     seq: num(j.seq, 0),
-    menu: arr(j.menu).map((m, i): MenuNode => ({ id: str(m.id) || uid("m"), name: str(m.name, "Menüpunkt"), parent: str(m.parent) || null, o: num(m.o, i), u: num(m.u, now) })),
+    frontends: arr(j.frontends).map((f, i): Frontend => ({ id: str(f.id) || uid("f"), name: str(f.name, "Frontend"), o: num(f.o, i), u: num(f.u, now) })),
+    // Stände aus der Zeit vor den Frontends: einmal nachfragen, ob die Hauptmenüpunkte Frontends sind.
+    feAsked: hasFrontends ? j.feAsked !== false : false,
+    menu: arr(j.menu).map(
+      (m, i): MenuNode => ({
+        id: str(m.id) || uid("m"),
+        name: str(m.name, "Menüpunkt"),
+        parent: str(m.parent) || null,
+        fe: str(m.fe) || null,
+        color: (COLORS as readonly string[]).includes(str(m.color)) ? (m.color as Color) : null,
+        o: num(m.o, i),
+        u: num(m.u, now),
+      }),
+    ),
     versions: arr(j.versions).map(
       (v, i): Version => ({
         id: str(v.id) || uid("v"),
@@ -245,11 +416,14 @@ export function normalizeProject(raw: unknown, now = Date.now()): Project {
         key: str(r.key),
         title: str(r.title),
         menuId: str(r.menuId) || null,
+        fe: str(r.fe) || null,
+        also: strs(r.also),
+        parentId: str(r.parentId) || null,
         prio: (str(r.prio) in PRIO ? r.prio : "S") as Prio,
         status: (str(r.status) in STATUS ? r.status : "open") as Status,
         versionId: str(r.versionId) || null,
         phaseId: str(r.phaseId) || null,
-        prereqIds: Array.isArray(r.prereqIds) ? r.prereqIds.filter((x): x is string => typeof x === "string") : [],
+        prereqIds: strs(r.prereqIds),
         desc: str(r.desc),
         story: { role: str(st.role), goal: str(st.goal), benefit: str(st.benefit) },
         criteria: arr(r.criteria).map((c) => ({ id: str(c.id) || uid("c"), text: str(c.text), done: !!c.done })),
@@ -265,6 +439,7 @@ export function normalizeProject(raw: unknown, now = Date.now()): Project {
     deletedAt: typeof j.deletedAt === "number" ? j.deletedAt : null,
     u: num(j.u, now),
   };
+  if (!p.menu.some((m) => !m.parent)) p.feAsked = true; // nichts umzustellen
   return tidy(p);
 }
 
@@ -307,20 +482,28 @@ export function importProject(raw: unknown, now = Date.now()): { project: Projec
     map.set(old, n);
     return n;
   };
+  const to = (old: string | null) => (old ? (map.get(old) ?? null) : null);
   p.id = uid("j");
+  for (const f of p.frontends) f.id = re(f.id, "f");
   for (const m of p.menu) m.id = re(m.id, "m");
-  for (const m of p.menu) m.parent = m.parent ? (map.get(m.parent) ?? null) : null;
+  for (const m of p.menu) {
+    m.parent = to(m.parent);
+    m.fe = to(m.fe);
+  }
   for (const v of p.versions) {
     v.id = re(v.id, "v");
     for (const ph of v.phases) ph.id = re(ph.id, "p");
   }
   for (const q of p.prereqs) q.id = re(q.id, "q");
+  for (const r of p.reqs) r.id = re(r.id, "r");
   const outFiles: Record<string, string> = {};
   for (const r of p.reqs) {
-    r.id = uid("r");
-    r.menuId = r.menuId ? (map.get(r.menuId) ?? null) : null;
-    r.versionId = r.versionId ? (map.get(r.versionId) ?? null) : null;
-    r.phaseId = r.phaseId ? (map.get(r.phaseId) ?? null) : null;
+    r.menuId = to(r.menuId);
+    r.fe = to(r.fe);
+    r.also = r.also.map((x) => map.get(x)).filter((x): x is string => !!x);
+    r.parentId = to(r.parentId);
+    r.versionId = to(r.versionId);
+    r.phaseId = to(r.phaseId);
     r.prereqIds = r.prereqIds.map((x) => map.get(x)).filter((x): x is string => !!x);
     for (const c of r.criteria) c.id = uid("c");
     r.attachments = r.attachments.filter((a) => files[a.id]);
@@ -331,7 +514,7 @@ export function importProject(raw: unknown, now = Date.now()): { project: Projec
     }
     r.u = now;
   }
-  for (const x of [...p.menu, ...p.versions, ...p.versions.flatMap((v) => v.phases), ...p.prereqs]) x.u = now;
+  for (const x of [...p.frontends, ...p.menu, ...p.versions, ...p.versions.flatMap((v) => v.phases), ...p.prereqs]) x.u = now;
   p.gone = {};
   p.createdAt = now;
   p.deletedAt = null;
@@ -388,6 +571,9 @@ export function demoProject(now = Date.now()): Project {
   const raw = {
     product: "Kundenportal (Beispiel)",
     seq: 11,
+    // Im Beispiel sind die Hauptmenüpunkte gewöhnliche Menüs eines einzigen Frontends.
+    frontends: [{ id: "f1", name: "Kundenfrontend" }],
+    feAsked: true,
     menu: [
       { id: "m1", name: "Dashboard", parent: null },
       { id: "m2", name: "Konto", parent: null },

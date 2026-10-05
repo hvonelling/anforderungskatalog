@@ -1,17 +1,24 @@
 // Abgeleitete Sichten auf ein Projekt: Baum, Filter, Gruppen, Board, Tabelle, Übersicht, Lastenheft.
 // Reine Funktionen ohne Oberfläche, damit sie sich einzeln prüfen lassen.
 
-import type { MenuNode, Phase, Prereq, Prio, Project, Req, Status, Version } from "./types";
+import { cmpKey } from "./model";
+import type { Color, Frontend, MenuNode, Phase, Prereq, Prio, Project, Req, Status, Version } from "./types";
 import { PRIO, STATUS } from "./types";
 
 export interface MenuIndex {
   byId: Map<string, MenuNode>;
   kids(parent: string | null): MenuNode[];
+  /** Hauptmenüpunkte eines Frontends */
+  roots(fe: string): MenuNode[];
   pathOf(id: string | null): string;
   subOf(id: string): Set<string>;
-  /** Baum in Anzeige-Reihenfolge */
+  /** Baum in Anzeige-Reihenfolge: Frontend für Frontend */
   dfs: { m: MenuNode; depth: number }[];
   order: Map<string, number>;
+  frontends: Frontend[];
+  /** true = Projekt hat mehrere Frontends; dann erscheint das Frontend in Pfaden und Spalten */
+  multi: boolean;
+  feName(id: string | null): string;
 }
 
 export function menuIndex(p: Project): MenuIndex {
@@ -22,6 +29,7 @@ export function menuIndex(p: Project): MenuIndex {
     (children.get(k) ?? children.set(k, []).get(k)!).push(m);
   }
   const kids = (parent: string | null) => children.get(parent) ?? [];
+  const roots = (fe: string) => kids(null).filter((m) => m.fe === fe);
   const pathOf = (id: string | null) => {
     const a: string[] = [];
     let m = id ? byId.get(id) : undefined;
@@ -43,28 +51,45 @@ export function menuIndex(p: Project): MenuIndex {
     return set;
   };
   const dfs: { m: MenuNode; depth: number }[] = [];
-  const walk = (parent: string | null, depth: number) =>
-    kids(parent).forEach((m) => {
+  const walk = (list: MenuNode[], depth: number) =>
+    list.forEach((m) => {
       if (depth > 50) return;
       dfs.push({ m, depth });
-      walk(m.id, depth + 1);
+      walk(kids(m.id), depth + 1);
     });
-  walk(null, 0);
-  return { byId, kids, pathOf, subOf, dfs, order: new Map(dfs.map((x, i) => [x.m.id, i])) };
+  for (const f of p.frontends) walk(roots(f.id), 0);
+  const feById = new Map(p.frontends.map((f) => [f.id, f]));
+  return {
+    byId,
+    kids,
+    roots,
+    pathOf,
+    subOf,
+    dfs,
+    order: new Map(dfs.map((x, i) => [x.m.id, i])),
+    frontends: p.frontends,
+    multi: p.frontends.length > 1,
+    feName: (id) => (id ? (feById.get(id)?.name ?? "") : ""),
+  };
 }
 
 export const liveReqs = (p: Project) => p.reqs.filter((r) => !r.deletedAt);
-export const trashedReqs = (p: Project) => p.reqs.filter((r) => r.deletedAt).sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0));
+export const trashedReqs = (p: Project) => p.reqs.filter((r) => r.deletedAt).sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0) || cmpKey(a.key, b.key));
+/** Teilanforderungen einer Anforderung (ohne Papierkorb), nach Nummer. */
+export const partsOf = (p: Project, id: string) => p.reqs.filter((r) => r.parentId === id && !r.deletedAt).sort((a, b) => cmpKey(a.key, b.key));
+/** Gehört die Anforderung zu diesem Frontend, direkt oder über „betrifft auch“? */
+export const inFrontend = (r: Req, fe: string) => r.fe === fe || r.also.includes(fe);
 
 // ---------------------------------------------------------------- Lücken
 
-export type GapKey = "noTitle" | "noDesc" | "noCrit" | "noMenu" | "mustUnplanned";
+export type GapKey = "noTitle" | "noDesc" | "noCrit" | "noMenu" | "mustUnplanned" | "doneOpenParts";
 export const GAPS: { key: GapKey; label: string; hint: string }[] = [
   { key: "noTitle", label: "Ohne Titel", hint: "Anforderungen, die noch keinen Titel haben." },
   { key: "noDesc", label: "Ohne Beschreibung", hint: "Weder Beschreibung noch User Story. Won’t-Anforderungen zählen nicht mit." },
   { key: "noCrit", label: "Ohne Akzeptanzkriterien", hint: "Es ist nicht festgelegt, wann die Anforderung als erfüllt gilt. Won’t-Anforderungen zählen nicht mit." },
   { key: "noMenu", label: "Ohne Menüpunkt", hint: "Keinem Punkt der Menüstruktur zugeordnet." },
   { key: "mustUnplanned", label: "Must, nicht eingeplant", hint: "Must-Anforderungen ohne Version." },
+  { key: "doneOpenParts", label: "Erledigt, aber Teile offen", hint: "Die Anforderung steht auf Erledigt, obwohl Teilanforderungen noch nicht erledigt sind. Won’t-Teile zählen nicht mit." },
 ];
 
 export function gapPred(p: Project, key: GapKey): (r: Req) => boolean {
@@ -81,12 +106,18 @@ export function gapPred(p: Project, key: GapKey): (r: Req) => boolean {
       return (r) => !r.menuId || !menuIds.has(r.menuId);
     case "mustUnplanned":
       return (r) => r.prio === "M" && (!r.versionId || !verIds.has(r.versionId));
+    case "doneOpenParts": {
+      const open = new Set(p.reqs.filter((r) => r.parentId && !r.deletedAt && r.prio !== "W" && r.status !== "done").map((r) => r.parentId!));
+      return (r) => r.status === "done" && open.has(r.id);
+    }
   }
 }
 
 // ---------------------------------------------------------------- Filter
 
 export interface Filters {
+  /** null = alle Frontends */
+  feId?: string | null;
   menuId: string | null;
   prio: Prio | "";
   status: Status | "";
@@ -98,8 +129,10 @@ export function filterReqs(p: Project, ix: MenuIndex, f: Filters): Req[] {
   const scope = f.menuId && ix.byId.has(f.menuId) ? ix.subOf(f.menuId) : null;
   const q = f.search.trim().toLowerCase();
   const gap = f.gap ? gapPred(p, f.gap) : null;
+  const fe = f.feId && p.frontends.some((x) => x.id === f.feId) ? f.feId : null;
   return liveReqs(p).filter(
     (r) =>
+      (!fe || inFrontend(r, fe)) &&
       (!scope || (r.menuId !== null && scope.has(r.menuId))) &&
       (!f.prio || r.prio === f.prio) &&
       (!f.status || r.status === f.status) &&
@@ -108,33 +141,70 @@ export function filterReqs(p: Project, ix: MenuIndex, f: Filters): Req[] {
   );
 }
 
-export const byPrio = (a: Req, b: Req) => PRIO[a.prio].rank - PRIO[b.prio].rank || a.key.localeCompare(b.key);
+export const byPrio = (a: Req, b: Req) => PRIO[a.prio].rank - PRIO[b.prio].rank || cmpKey(a.key, b.key);
+
+/**
+ * Reihenfolge für Liste und Lastenheft: nach Priorität, Teilanforderungen direkt unter ihrer
+ * großen Anforderung (nach Nummer). Ein Teil ohne seine große Anforderung in der Auswahl steht für sich.
+ */
+export function withParts(reqs: Req[]): { r: Req; part: boolean }[] {
+  const ids = new Set(reqs.map((r) => r.id));
+  const out: { r: Req; part: boolean }[] = [];
+  for (const r of reqs.filter((x) => !x.parentId || !ids.has(x.parentId)).sort(byPrio)) {
+    out.push({ r, part: false });
+    for (const c of reqs.filter((x) => x.parentId === r.id).sort((a, b) => cmpKey(a.key, b.key))) out.push({ r: c, part: true });
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- Angaben je Anforderung
 
 export interface ReqInfo {
   r: Req;
+  /** Menüpfad, bei mehreren Frontends mit dem Frontend davor */
   path: string;
+  feName: string;
+  /** Namen der zusätzlich betroffenen Frontends */
+  also: string[];
+  /** Farbe des eigenen Menüpunkts */
+  color: Color | null;
   version: Version | null;
   phase: Phase | null;
   links: Prereq[];
   preOpen: number;
   /** kurze Angabe „v1.0 · Phase 1“ */
   vp: string;
+  parent: Req | null;
+  /** Teilanforderungen ohne Papierkorb */
+  parts: Req[];
+  partsDone: number;
+  /** Erledigt gesetzt, obwohl Teile (außer Won’t) noch offen sind */
+  partsWarn: boolean;
 }
 
 export function reqInfo(p: Project, ix: MenuIndex, r: Req): ReqInfo {
   const version = p.versions.find((v) => v.id === r.versionId) ?? null;
   const phase = version?.phases.find((x) => x.id === r.phaseId) ?? null;
   const links = r.prereqIds.map((i) => p.prereqs.find((q) => q.id === i)).filter((q): q is Prereq => !!q);
+  const m = r.menuId ? ix.byId.get(r.menuId) : undefined;
+  const menuPath = m ? ix.pathOf(m.id) : "Ohne Menüpunkt";
+  const feName = ix.feName(r.fe);
+  const parts = partsOf(p, r.id);
   return {
     r,
-    path: r.menuId && ix.byId.has(r.menuId) ? ix.pathOf(r.menuId) : "Ohne Menüpunkt",
+    path: ix.multi && feName ? feName + " › " + menuPath : menuPath,
+    feName,
+    also: r.also.map((f) => ix.feName(f)).filter(Boolean),
+    color: m?.color ?? null,
     version,
     phase,
     links,
     preOpen: links.filter((q) => !q.done).length,
     vp: version ? version.name + (phase ? " · " + phase.name.split(" · ")[0] : "") : "—",
+    parent: r.parentId ? (p.reqs.find((x) => x.id === r.parentId) ?? null) : null,
+    parts,
+    partsDone: parts.filter((x) => x.status === "done").length,
+    partsWarn: r.status === "done" && parts.some((x) => x.prio !== "W" && x.status !== "done"),
   };
 }
 
@@ -144,21 +214,29 @@ export interface Group {
   id: string;
   name: string;
   parentPath: string;
-  items: Req[];
+  color: Color | null;
+  items: { r: Req; part: boolean }[];
 }
 
 export function groupByMenu(ix: MenuIndex, reqs: Req[]): Group[] {
   const map = new Map<string, Req[]>();
+  const feOrder = new Map(ix.frontends.map((f, i) => [f.id, i]));
   for (const r of reqs) {
-    const k = r.menuId && ix.byId.has(r.menuId) ? r.menuId : "__none";
+    const k = r.menuId && ix.byId.has(r.menuId) ? r.menuId : "__none:" + (r.fe ?? "");
     (map.get(k) ?? map.set(k, []).get(k)!).push(r);
   }
-  const pos = (k: string) => (k === "__none" ? 1e9 : (ix.order.get(k) ?? 1e9));
+  // Je Frontend erst der Baum, dann „Ohne Menüpunkt“.
+  const pos = (k: string): [number, number] => {
+    if (k.startsWith("__none:")) return [feOrder.get(k.slice(7)) ?? 1e9, 1e9];
+    return [feOrder.get(ix.byId.get(k)!.fe ?? "") ?? 1e9, ix.order.get(k) ?? 1e9];
+  };
   return [...map.keys()]
-    .sort((a, b) => pos(a) - pos(b))
+    .sort((a, b) => pos(a)[0] - pos(b)[0] || pos(a)[1] - pos(b)[1])
     .map((k) => {
       const m = ix.byId.get(k);
-      return { id: k, name: m ? m.name : "Ohne Menüpunkt", parentPath: m && m.parent ? ix.pathOf(m.parent) : "", items: map.get(k)!.sort(byPrio) };
+      const fe = ix.multi ? ix.feName(m ? m.fe : k.slice(7)) : "";
+      const parent = m && m.parent ? ix.pathOf(m.parent) : "";
+      return { id: k, name: m ? m.name : "Ohne Menüpunkt", parentPath: [fe, parent].filter(Boolean).join(" › "), color: m?.color ?? null, items: withParts(map.get(k)!) };
     });
 }
 
@@ -190,25 +268,32 @@ export function boardColumns(p: Project, reqs: Req[], versionId: string | null):
 
 // ---------------------------------------------------------------- Tabelle
 
-export type SortKey = "key" | "title" | "prio" | "status" | "path" | "ver" | "phase" | "pre";
-export const TABLE_HEADERS: [SortKey, string][] = [
-  ["key", "ID"],
-  ["title", "Titel"],
-  ["prio", "Prio"],
-  ["status", "Status"],
-  ["path", "Menüpunkt"],
-  ["ver", "Version"],
-  ["phase", "Phase"],
-  ["pre", "Vorauss."],
-];
+export type SortKey = "key" | "title" | "prio" | "status" | "fe" | "path" | "ver" | "phase" | "pre";
+/** Spalten der Tabelle. Die Spalte Frontend gibt es nur bei mehreren Frontends. */
+export function tableHeaders(multi: boolean): [SortKey, string][] {
+  const all: [SortKey, string][] = [
+    ["key", "ID"],
+    ["title", "Titel"],
+    ["prio", "Prio"],
+    ["status", "Status"],
+    ["fe", "Frontend"],
+    ["path", "Menüpunkt"],
+    ["ver", "Version"],
+    ["phase", "Phase"],
+    ["pre", "Vorauss."],
+  ];
+  return multi ? all : all.filter(([k]) => k !== "fe");
+}
 
 export function sortTable(p: Project, ix: MenuIndex, reqs: Req[], key: SortKey, dir: 1 | -1): Req[] {
   const done = new Map(p.prereqs.map((q) => [q.id, q.done]));
+  const feOrder = new Map(p.frontends.map((f, i) => [f.id, i]));
   const val: Record<SortKey, (r: Req) => string | number> = {
-    key: (r) => r.key,
+    key: () => 0, // die Nummer entscheidet unten
     title: (r) => r.title.toLowerCase(),
     prio: (r) => PRIO[r.prio].rank,
     status: (r) => STATUS[r.status].rank,
+    fe: (r) => feOrder.get(r.fe ?? "") ?? 1e9,
     path: (r) => (r.menuId ? (ix.order.get(r.menuId) ?? 1e9) : 1e9),
     ver: (r) => {
       const i = p.versions.findIndex((v) => v.id === r.versionId);
@@ -224,7 +309,7 @@ export function sortTable(p: Project, ix: MenuIndex, reqs: Req[], key: SortKey, 
   return [...reqs].sort((a, b) => {
     const x = val[key](a),
       y = val[key](b);
-    return (x < y ? -1 : x > y ? 1 : a.key.localeCompare(b.key)) * dir;
+    return (x < y ? -1 : x > y ? 1 : cmpKey(a.key, b.key)) * dir;
   });
 }
 
@@ -258,13 +343,18 @@ export interface Overview {
   /** ohne Won’t */
   all: Progress;
   wont: number;
+  /** je Frontend die Anforderungen, die dort liegen (ohne „betrifft auch“) */
+  frontends: { id: string; name: string; p: Progress }[];
   versions: { id: string; name: string; p: Progress; phases: { id: string; name: string; p: Progress }[] }[];
   unplanned: Progress;
   gaps: { key: GapKey; label: string; hint: string; count: number }[];
   prereqs: { total: number; done: number };
 }
 
-/** Fortschritt je Version und Phase sowie Lücken im Katalog. Won’t-Anforderungen zählen beim Fortschritt nicht mit. */
+/**
+ * Fortschritt je Frontend, Version und Phase sowie Lücken im Katalog.
+ * Won’t-Anforderungen zählen beim Fortschritt nicht mit. Große Anforderungen und ihre Teile zählen jeweils einzeln.
+ */
 export function overview(p: Project): Overview {
   const live = liveReqs(p);
   const scope = live.filter((r) => r.prio !== "W");
@@ -272,6 +362,7 @@ export function overview(p: Project): Overview {
   return {
     all: progress(p, scope),
     wont: live.length - scope.length,
+    frontends: p.frontends.map((f) => ({ id: f.id, name: f.name, p: progress(p, scope.filter((r) => r.fe === f.id)) })),
     versions: p.versions.map((v) => {
       const inV = scope.filter((r) => r.versionId === v.id);
       const phases = v.phases.map((ph) => ({ id: ph.id, name: ph.name, p: progress(p, inV.filter((r) => r.phaseId === ph.id)) }));
@@ -289,16 +380,21 @@ export function overview(p: Project): Overview {
 
 export interface ReportItem {
   info: ReqInfo;
+  /** steht eingerückt unter seiner großen Anforderung */
+  part: boolean;
   storyText: string;
   preList: string;
 }
 export interface Report {
   version: string;
+  /** Name des gewählten Frontends, leer = alle */
+  frontend: string;
   total: number;
   must: number;
   done: number;
   preOpen: number;
-  phases: { name: string; items: ReportItem[] }[];
+  /** Abschnitte je Frontend. Bei einem gewählten oder nur einem Frontend genau ein Abschnitt ohne Namen. */
+  sections: { name: string; phases: { name: string; items: ReportItem[] }[] }[];
   pre: Prereq[];
 }
 
@@ -308,27 +404,32 @@ export function storyText(r: Req): string {
   return "Als " + (s.role || "…") + " möchte ich " + (s.goal || "…") + (s.benefit ? ", damit " + s.benefit : "") + ".";
 }
 
-export function report(p: Project, ix: MenuIndex, versionId: string): Report | null {
+/** feId = nur dieses Frontend (samt „betrifft auch“), null = alle, dann nach Frontend gegliedert. */
+export function report(p: Project, ix: MenuIndex, versionId: string, feId: string | null = null): Report | null {
   const v = p.versions.find((x) => x.id === versionId);
   if (!v) return null;
-  const all = liveReqs(p).filter((r) => r.versionId === v.id);
-  const item = (r: Req): ReportItem => {
+  const fe = feId ? (p.frontends.find((f) => f.id === feId) ?? null) : null;
+  const all = liveReqs(p).filter((r) => r.versionId === v.id && (!fe || inFrontend(r, fe.id)));
+  const item = ({ r, part }: { r: Req; part: boolean }): ReportItem => {
     const info = reqInfo(p, ix, r);
-    return { info, storyText: storyText(r), preList: info.links.map((q) => q.title + (q.done ? " (erfüllt)" : " (offen)")).join(" · ") };
+    return { info, part, storyText: storyText(r), preList: info.links.map((q) => q.title + (q.done ? " (erfüllt)" : " (offen)")).join(" · ") };
   };
-  const phases = v.phases
-    .map((ph) => ({ name: ph.name, items: all.filter((r) => r.phaseId === ph.id).sort(byPrio).map(item) }))
-    .concat([{ name: "Ohne Phase", items: all.filter((r) => !v.phases.some((ph) => ph.id === r.phaseId)).sort(byPrio).map(item) }])
-    .filter((x) => x.items.length);
+  const phasesOf = (reqs: Req[]) =>
+    v.phases
+      .map((ph) => ({ name: ph.name, items: withParts(reqs.filter((r) => r.phaseId === ph.id)).map(item) }))
+      .concat([{ name: "Ohne Phase", items: withParts(reqs.filter((r) => !v.phases.some((ph) => ph.id === r.phaseId))).map(item) }])
+      .filter((x) => x.items.length);
+  const sections = fe || !ix.multi ? [{ name: "", phases: phasesOf(all) }] : p.frontends.map((f) => ({ name: f.name, phases: phasesOf(all.filter((r) => r.fe === f.id)) })).filter((s) => s.phases.length);
   const preIds = [...new Set(all.flatMap((r) => r.prereqIds))];
   const pre = preIds.map((i) => p.prereqs.find((q) => q.id === i)).filter((q): q is Prereq => !!q);
   return {
     version: v.name,
+    frontend: fe ? fe.name : "",
     total: all.length,
     must: all.filter((r) => r.prio === "M").length,
     done: all.filter((r) => r.status === "done").length,
     preOpen: pre.filter((q) => !q.done).length,
-    phases,
+    sections,
     pre,
   };
 }

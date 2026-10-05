@@ -7,6 +7,9 @@ Live: https://hvonelling.github.io/anforderungskatalog/
 ## Was es kann
 
 - Mehrere Projekte, je Projekt ein eigener Katalog.
+- Mehrere Frontends je Projekt (etwa Admin, Kunde, Dienstleister), jedes mit eigenem Menübaum. Eine Anforderung kann weitere Frontends als betroffen markieren.
+- Farben für Menüpunkte, sichtbar in Seitenleiste, Liste, Board und Tabelle.
+- Teilanforderungen (eine Ebene) mit Unternummern wie REQ-012.1.
 - Menüstruktur als Baum, Anforderungen je Menüpunkt, Priorität nach MoSCoW, Status Offen / In Arbeit / Erledigt.
 - Ansichten: Übersicht (Fortschritt je Version und Phase, Lücken im Katalog), Liste, Board mit Ziehen zwischen Phasen, Tabelle, Voraussetzungen.
 - Je Anforderung: Beschreibung, User Story, Akzeptanzkriterien, Voraussetzungen, Anhänge, Verlauf der Verschiebungen.

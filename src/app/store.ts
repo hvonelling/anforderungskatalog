@@ -1,8 +1,8 @@
 // Zustand der App und alle Aktionen. Die Oberfläche liest nur aus dem Store und ruft seine Methoden auf.
 
 import { useEffect, useState } from "preact/hooks";
-import { clone, demoProject, emptyProject, EXPORT_FORMAT, importProject, mergeProject, moveReq, newReq, nextOrder, stamp, tidy, uid, unplan, type ExportFile } from "../domain/model";
-import type { Attachment, PreType, Prereq, Prio, Project, Req, Status } from "../domain/types";
+import { clone, demoProject, emptyProject, EXPORT_FORMAT, importProject, mergeProject, moveReq, newPart, newReq, nextOrder, removeFrontend, rootsToFrontends, setParent, stamp, tidy, uid, unplan, type ExportFile } from "../domain/model";
+import type { Attachment, Color, PreType, Prereq, Prio, Project, Req, Status } from "../domain/types";
 import type { GapKey, SortKey } from "../domain/view";
 import { dataUrlToBytes, idbBlobs, type BlobStore } from "../storage/blobs";
 import { b64 } from "../storage/crypto";
@@ -16,6 +16,8 @@ export type Dialog = null | "versions" | "projects" | "settings" | "trash";
 export interface Ui {
   projectId: string | null;
   view: View;
+  /** gewähltes Frontend, null = alle */
+  selFe: string | null;
   selMenu: string | null;
   selReq: string | null;
   boardVersion: string | null;
@@ -27,9 +29,15 @@ export interface Ui {
   sortDir: 1 | -1;
   collapsed: Record<string, boolean>;
   editMenu: string | null;
+  /** Frontend, dessen Name gerade bearbeitet wird */
+  editFe: string | null;
   editName: string;
+  /** Menüpunkt, dessen Farbauswahl offen ist */
+  colorMenu: string | null;
   dialog: Dialog;
   report: string | null;
+  /** Frontend im Lastenheft, null = alle */
+  reportFe: string | null;
   navOpen: boolean;
   mobile: boolean;
   dragId: string | null;
@@ -63,6 +71,7 @@ export class Store {
     this.ui = {
       projectId: first ? first.id : null,
       view: "uebersicht",
+      selFe: null,
       selMenu: null,
       selReq: null,
       boardVersion: null,
@@ -74,9 +83,12 @@ export class Store {
       sortDir: 1,
       collapsed: this.prefs.collapsed ?? {},
       editMenu: null,
+      editFe: null,
       editName: "",
+      colorMenu: null,
       dialog: null,
       report: null,
+      reportFe: null,
       navOpen: false,
       mobile: !!mq?.matches,
       dragId: null,
@@ -145,8 +157,9 @@ export class Store {
     const prev = this.projects[i];
     const next = clone(prev);
     fn(next);
-    stamp(prev, next);
     tidy(next);
+    stamp(prev, next);
+    if (next.deletedAt) tidy(next);
     this.projects = this.projects.map((p, k) => (k === i ? next : p));
     if (!local.saveProject(next)) setTimeout(() => this.flash("Speicher des Browsers ist voll. Änderung nicht gesichert."), 0);
     this.markDirty(id);
@@ -174,7 +187,7 @@ export class Store {
 
   selectProject(id: string | null) {
     this.savePrefs({ projectId: id });
-    this.set({ projectId: id, selMenu: null, selReq: null, boardVersion: null, gap: null, search: "", fPrio: "", fStatus: "", report: null, editMenu: null });
+    this.set({ projectId: id, selFe: null, selMenu: null, selReq: null, boardVersion: null, gap: null, search: "", fPrio: "", fStatus: "", report: null, reportFe: null, editMenu: null, editFe: null, colorMenu: null });
   }
   private addProject(p: Project) {
     this.projects = [...this.projects, p];
@@ -258,7 +271,7 @@ export class Store {
     let id = "";
     const menu = this.ui.selMenu;
     this.edit((p) => {
-      id = newReq(p, menu && p.menu.some((m) => m.id === menu) ? menu : null).id;
+      id = newReq(p, menu && p.menu.some((m) => m.id === menu) ? menu : null, this.ui.selFe).id;
     });
     if (id) this.set({ selReq: id, gap: null, search: "", fPrio: "", fStatus: "", view: this.view === "uebersicht" || this.view === "pre" ? "liste" : this.ui.view });
   };
@@ -267,25 +280,106 @@ export class Store {
   }
   trashReq(id: string) {
     const r = this.project?.reqs.find((x) => x.id === id);
-    this.upd(id, (x) => {
-      x.deletedAt = Date.now();
+    const now = Date.now();
+    this.edit((p) => {
+      for (const x of p.reqs) if ((x.id === id || x.parentId === id) && !x.deletedAt) x.deletedAt = now;
     });
     this.set({ selReq: null });
     if (r) this.flash(r.key + " in den Papierkorb gelegt");
   }
+  /** Wiederherstellen. Eine große Anforderung bringt ihre Teile mit, ein Teil seine große Anforderung. */
   restoreReq(id: string) {
-    this.upd(id, (x) => {
-      x.deletedAt = null;
+    this.edit((p) => {
+      const r = p.reqs.find((x) => x.id === id);
+      if (!r) return;
+      const stampOf = r.deletedAt;
+      r.deletedAt = null;
+      for (const x of p.reqs) {
+        if (x.id === r.parentId) x.deletedAt = null;
+        if (x.parentId === id && x.deletedAt === stampOf) x.deletedAt = null; // nur Teile, die mit ihr gelöscht wurden
+      }
     });
   }
   purgeReqs(ids: string[]) {
     const p = this.project;
     if (!p) return;
     const set = new Set(ids);
+    for (const r of p.reqs) if (r.parentId && set.has(r.parentId)) set.add(r.id);
     for (const r of p.reqs) if (set.has(r.id)) for (const a of r.attachments) this.dropAttachment(p.id, a.id);
     this.edit((x) => {
       x.reqs = x.reqs.filter((r) => !set.has(r.id));
     });
+  }
+
+  // ------------------------------------------------------------ Teilanforderungen
+
+  addPart(parentId: string, title: string) {
+    this.edit((p) => {
+      newPart(p, parentId, title);
+    });
+  }
+  /** Zu einem Teil von parentId machen, oder mit null herauslösen. */
+  setParent(reqId: string, parentId: string | null) {
+    this.edit((p) => setParent(p, reqId, parentId));
+  }
+
+  // ------------------------------------------------------------ Frontends
+
+  /** Gewähltes Frontend, sofern es noch existiert. */
+  get selFe(): string | null {
+    const p = this.project;
+    return p && p.frontends.some((f) => f.id === this.ui.selFe) ? this.ui.selFe : null;
+  }
+  selectFe(id: string | null) {
+    const p = this.project;
+    const menu = p?.menu.find((m) => m.id === this.ui.selMenu);
+    // Ein gewählter Menüpunkt aus einem anderen Frontend passt nicht mehr zur Auswahl.
+    this.set({ selFe: id, selMenu: id && menu && menu.fe !== id ? null : this.ui.selMenu, editFe: null, colorMenu: null });
+  }
+  addFrontend() {
+    const id = uid("f");
+    this.edit((p) => {
+      p.frontends.push({ id, name: "Neues Frontend", o: nextOrder(p.frontends), u: 0 });
+      p.feAsked = true;
+    });
+    this.set({ selFe: id, selMenu: null, editFe: id, editName: "Neues Frontend" });
+  }
+  commitFe = () => {
+    const { editFe, editName } = this.ui;
+    if (!editFe) return;
+    const name = editName.trim();
+    if (name)
+      this.edit((p) => {
+        const f = p.frontends.find((x) => x.id === editFe);
+        if (f) f.name = name;
+      });
+    this.set({ editFe: null });
+  };
+  deleteFrontend(id: string) {
+    const p = this.project;
+    const fe = p?.frontends.find((f) => f.id === id);
+    if (!p || !fe || p.frontends.length < 2) return;
+    const target = p.frontends.find((f) => f.id !== id)!;
+    const had = p.menu.some((m) => m.fe === id) || p.reqs.some((r) => r.fe === id);
+    this.edit((d) => removeFrontend(d, id));
+    this.set({ selFe: null, selMenu: null });
+    this.flash("Frontend „" + fe.name + "“ gelöscht" + (had ? " – Inhalt liegt jetzt unter „" + target.name + "“" : ""));
+  }
+  /** Antwort auf die einmalige Frage bei älteren Projekten. */
+  answerFrontends(convert: boolean) {
+    this.edit((p) => {
+      if (convert) rootsToFrontends(p);
+      else p.feAsked = true;
+    });
+    this.set({ selFe: null, selMenu: null });
+    if (convert) this.flash("Hauptmenüpunkte sind jetzt Frontends");
+  }
+  setMenuColor(id: string, color: Color | null) {
+    this.edit((p) => {
+      const m = p.menu.find((x) => x.id === id);
+      if (m) m.color = color;
+    });
+    this.set({ colorMenu: null });
   }
 
   // ------------------------------------------------------------ Menüstruktur
@@ -293,7 +387,7 @@ export class Store {
   addMenu(parent: string | null) {
     const id = uid("m");
     this.edit((p) => {
-      p.menu.push({ id, name: "Neuer Menüpunkt", parent, o: nextOrder(p.menu), u: 0 });
+      p.menu.push({ id, name: "Neuer Menüpunkt", parent, fe: parent ? null : (this.selFe ?? p.frontends[0].id), color: null, o: nextOrder(p.menu), u: 0 });
     });
     this.set({ editMenu: id, editName: "Neuer Menüpunkt", selMenu: id, collapsed: parent ? { ...this.ui.collapsed, [parent]: false } : this.ui.collapsed });
   }
