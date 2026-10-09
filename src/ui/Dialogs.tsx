@@ -2,7 +2,8 @@
 
 import { useRef, useState } from "preact/hooks";
 import type { Store } from "../app/store";
-import type { Project } from "../domain/types";
+import { planOrder, previewFeedback } from "../domain/order";
+import { BRIEF_FIELDS, STATUS, type Project } from "../domain/types";
 import { liveReqs, trashedReqs } from "../domain/view";
 import { randomPassword } from "../storage/crypto";
 import { DEFAULT_REPO } from "../storage/github";
@@ -139,6 +140,16 @@ export function ProjectsDialog({ s }: { s: Store }) {
             <span class="small dim grow">
               {liveReqs(p).length} Anforderungen · {p.versions.length} Versionen
             </span>
+            <button
+              type="button"
+              class="btn sm"
+              onClick={() => {
+                s.selectProject(p.id);
+                s.set({ dialog: "brief" });
+              }}
+            >
+              Steckbrief
+            </button>
             <button type="button" class="btn sm" onClick={() => void s.exportProject(p.id)}>
               Export
             </button>
@@ -315,6 +326,182 @@ export function SettingsDialog({ s }: { s: Store }) {
       <span class="note">
         Projekte und Anhänge werden vor dem Hochladen mit dem Passwort verschlüsselt. Ohne das Passwort sind die Dateien im Repo nicht lesbar, auch nicht für dich. Schlüssel und Passwort bleiben nur in diesem Browser gespeichert.
       </span>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------- Steckbrief
+
+export function BriefDialog({ s, p }: { s: Store; p: Project }) {
+  const filled = BRIEF_FIELDS.filter((f) => p.brief[f.key].trim()).length;
+  return (
+    <Dialog title={"Steckbrief: " + p.name} onClose={close(s)}>
+      <span class="small muted">
+        Rahmenbedingungen für die Umsetzung, die in keiner einzelnen Anforderung stehen. Der Steckbrief liegt jedem Auftrag bei. Leere Felder kläre ich vor dem Bau mit dir. {filled} von {BRIEF_FIELDS.length} ausgefüllt.
+      </span>
+      {BRIEF_FIELDS.map((f) => (
+        <label key={f.key} class="fld">
+          <span>{f.label}</span>
+          <textarea class="field" rows={f.key === "codePath" ? 1 : 2} style="resize:vertical" placeholder={f.hint} value={p.brief[f.key]} onInput={(e) => s.setBrief(f.key, val(e))} />
+        </label>
+      ))}
+      <div class="hrow">
+        <button type="button" class="btn" onClick={() => s.set({ dialog: "order" })}>
+          Zur Umsetzung
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------- Umsetzung: Auftrag und Rückmeldung
+
+function FeedbackPreviewBox({ s, p }: { s: Store; p: Project }) {
+  const f = s.ui.feedback!;
+  const pre = previewFeedback(p, f);
+  const nothing = pre.changes.every((c) => !c.statusTo && !c.criteriaTicked.length && !c.criteriaAdded.length && !c.descChanged && !c.note);
+  return (
+    <div class="vbox">
+      <span style="font-weight:600">Vorschau der Rückmeldung {f.orderId && <span class="mono dim">{f.orderId}</span>}</span>
+      {!pre.projectOk && <div class="err-box">Diese Rückmeldung gehört zu einem anderen Projekt. Bitte das passende Projekt öffnen.</div>}
+      {f.summary && <span class="small muted" style="white-space:pre-wrap">{f.summary}</span>}
+      {pre.changes.map((c) => (
+        <div key={c.id} class="fb-row">
+          <span>
+            <span class="mono muted">{c.key}</span> {c.title || "Ohne Titel"}
+          </span>
+          <ul class="small">
+            {c.statusTo && (
+              <li>
+                Status: {STATUS[c.statusFrom].label} → <b>{STATUS[c.statusTo].label}</b>
+              </li>
+            )}
+            {c.criteriaTicked.map((t) => (
+              <li key={"t" + t}>Kriterium erfüllt: {t}</li>
+            ))}
+            {c.criteriaAdded.map((t) => (
+              <li key={"a" + t}>Neues Kriterium: {t}</li>
+            ))}
+            {c.descChanged && <li>Beschreibung wird ergänzt</li>}
+            {c.note && <li class="muted">Notiz: {c.note}</li>}
+            {!c.statusTo && !c.criteriaTicked.length && !c.criteriaAdded.length && !c.descChanged && !c.note && <li class="dim">keine Änderung</li>}
+          </ul>
+        </div>
+      ))}
+      {pre.unknown.length > 0 && <span class="small warn">Nicht gefunden und übersprungen: {pre.unknown.join(", ")}</span>}
+      <div class="hrow">
+        <button type="button" class="btn primary" disabled={!pre.projectOk || nothing} onClick={() => s.applyFeedback()}>
+          Übernehmen
+        </button>
+        <button type="button" class="btn" onClick={() => s.set({ feedback: null })}>
+          Verwerfen
+        </button>
+      </div>
+      <span class="note">Umgesetzte Anforderungen bekommen den Status „Zu prüfen“. „Erledigt“ setzt du selbst nach deiner Abnahme.</span>
+    </div>
+  );
+}
+
+export function OrderDialog({ s, p }: { s: Store; p: Project }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const vId = s.curVersion();
+  const v = p.versions.find((x) => x.id === vId) ?? null;
+  const ph = v ? (v.phases.find((x) => x.id === s.ui.orderPhase) ?? v.phases[0] ?? null) : null;
+  const plan = v && ph ? planOrder(p, v.id, ph.id) : null;
+  const briefMissing = BRIEF_FIELDS.filter((f) => !p.brief[f.key].trim()).length;
+  return (
+    <Dialog title="Umsetzung mit Claude" onClose={close(s)} wide>
+      <span class="small muted">Eine Phase als Auftrag exportieren, in Claude Code mit dem Befehl /umsetzen bauen lassen und danach die Rückmeldung hier einlesen.</span>
+
+      <span class="label">1 · Auftrag exportieren</span>
+      {!v && <span class="dim">Lege zuerst eine Version mit Phasen an und plane Anforderungen ein.</span>}
+      {v && (
+        <>
+          <div class="hrow">
+            <span class="tiny dim">Version</span>
+            {p.versions.map((x) => (
+              <Chip key={x.id} mono on={x.id === v.id} onClick={() => s.set({ boardVersion: x.id, orderPhase: null })}>
+                {x.name}
+              </Chip>
+            ))}
+          </div>
+          <div class="hrow">
+            <span class="tiny dim">Phase</span>
+            {v.phases.map((x) => (
+              <Chip key={x.id} on={x.id === ph?.id} onClick={() => s.set({ orderPhase: x.id })}>
+                {x.name}
+              </Chip>
+            ))}
+            {v.phases.length === 0 && <span class="dim">Diese Version hat noch keine Phase.</span>}
+          </div>
+        </>
+      )}
+      {plan && ph && v && (
+        <div class="vbox">
+          <span>
+            <b>{plan.todo.length}</b> umzusetzen · {plan.done.length} schon umgesetzt · {plan.wont.length} Won’t
+          </span>
+          {plan.todo.some((r) => r.impl) && <span class="small warn">Darunter {plan.todo.filter((r) => r.impl).length} seit der Umsetzung geänderte Anforderungen. Der Auftrag stellt alt und neu gegenüber.</span>}
+          {plan.thin.length > 0 && (
+            <span class="small warn">
+              Für die Umsetzung noch dünn: {plan.thin.map((t) => t.key + " (" + t.missing.join(", ") + ")").join(" · ")}. Der Export geht trotzdem, ich frage dann vor dem Bau nach.
+            </span>
+          )}
+          {briefMissing > 0 && (
+            <span class="small warn">
+              Im Steckbrief fehlen {briefMissing} von {BRIEF_FIELDS.length} Angaben.{" "}
+              <button type="button" class="linklike" onClick={() => s.set({ dialog: "brief" })}>
+                Steckbrief öffnen
+              </button>
+            </span>
+          )}
+          <div class="hrow">
+            <button
+              type="button"
+              class="btn primary"
+              disabled={busy || plan.todo.length === 0}
+              onClick={async () => {
+                setBusy(true);
+                await s.exportOrder(v.id, ph.id).catch(() => s.flash("Export fehlgeschlagen"));
+                setBusy(false);
+              }}
+            >
+              {busy ? "Stelle zusammen …" : "Auftrag exportieren (ZIP)"}
+            </button>
+            <button type="button" class="btn" onClick={() => s.set({ dialog: "brief" })}>
+              Steckbrief
+            </button>
+          </div>
+          <span class="note">Die ZIP-Datei enthält auftrag.json, eine lesbare AUFTRAG.md und die Anhänge der Anforderungen. Lass sie im Ordner Downloads liegen, der Befehl /umsetzen nimmt die neueste.</span>
+        </div>
+      )}
+
+      <span class="label" style="margin-top:6px">
+        2 · Rückmeldung einlesen
+      </span>
+      {s.ui.feedback ? (
+        <FeedbackPreviewBox s={s} p={p} />
+      ) : (
+        <div class="hrow">
+          <button type="button" class="btn" onClick={() => fileRef.current?.click()}>
+            Rückmeldung wählen (rueckmeldung.json)
+          </button>
+          <span class="small dim">Du siehst erst eine Vorschau, geändert wird nichts ohne deine Bestätigung.</span>
+        </div>
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        style="display:none"
+        onChange={(e) => {
+          const input = e.target as HTMLInputElement;
+          const f = input.files?.[0];
+          input.value = "";
+          if (f) void s.loadFeedback(f);
+        }}
+      />
     </Dialog>
   );
 }

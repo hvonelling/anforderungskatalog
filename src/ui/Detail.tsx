@@ -119,7 +119,7 @@ export function Detail({ s, p, ix, r }: { s: Store; p: Project; ix: MenuIndex; r
         <textarea class="ghost title-input" rows={2} placeholder="Titel der Anforderung" value={r.title} onInput={(e) => s.upd(id, (x) => (x.title = val(e).replace(/\n/g, " ")))} />
 
         <div class="two">
-          <div class="fld">
+          <div class="fld wide">
             <span>Priorität (MoSCoW)</span>
             <div class="seg prio-seg">
               {PRIOS.map((k) => (
@@ -129,7 +129,7 @@ export function Detail({ s, p, ix, r }: { s: Store; p: Project; ix: MenuIndex; r
               ))}
             </div>
           </div>
-          <div class="fld">
+          <div class="fld wide">
             <span>Status</span>
             <div class="seg">
               {STATUSES.map((k) => (
@@ -219,6 +219,20 @@ export function Detail({ s, p, ix, r }: { s: Store; p: Project; ix: MenuIndex; r
             </select>
           </label>
         </div>
+
+        {r.impl && (
+          <div class={"impl" + (info.changed ? " changed" : "")}>
+            <span>
+              <b>{info.changed ? "Geändert seit der Umsetzung" : "Umgesetzt"}</b> <span class="dim">am {fmtDateTime(r.impl.at)}</span>
+            </span>
+            {r.impl.note && <span style="white-space:pre-wrap">{r.impl.note}</span>}
+            {info.changed && (
+              <span class="small">
+                Umgesetzt war: „{r.impl.snap.title}“{r.impl.snap.criteria.length ? " mit " + r.impl.snap.criteria.length + " Kriterien" : ""}. Der nächste Auftrag dieser Phase nimmt die Anforderung mit einer Gegenüberstellung wieder auf.
+              </span>
+            )}
+          </div>
+        )}
 
         <div class="fld">
           <span>Beschreibung</span>

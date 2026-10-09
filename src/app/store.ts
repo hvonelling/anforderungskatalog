@@ -2,16 +2,18 @@
 
 import { useEffect, useState } from "preact/hooks";
 import { clone, demoProject, emptyProject, EXPORT_FORMAT, importProject, mergeProject, moveReq, newPart, newReq, nextOrder, removeFrontend, rootsToFrontends, setParent, stamp, tidy, uid, unplan, type ExportFile } from "../domain/model";
-import type { Attachment, Color, PreType, Prereq, Prio, Project, Req, Status } from "../domain/types";
+import type { Attachment, Brief, Color, PreType, Prereq, Prio, Project, Req, Status } from "../domain/types";
+import { applyFeedback, attachmentFile, buildOrder, orderMarkdown, parseFeedback, planOrder, type Feedback } from "../domain/order";
 import type { GapKey, SortKey } from "../domain/view";
 import { dataUrlToBytes, idbBlobs, type BlobStore } from "../storage/blobs";
 import { b64 } from "../storage/crypto";
 import type { GitHubConfig } from "../storage/github";
 import { local, type SyncMeta, type Theme, type UiPrefs } from "../storage/local";
-import { fetchAttachment, MAX_ATTACHMENT, sync } from "../storage/sync";
+import { fetchAttachment, fileSlug, MAX_ATTACHMENT, sync } from "../storage/sync";
+import { textBytes, zip, type ZipEntry } from "../storage/zip";
 
 export type View = "uebersicht" | "liste" | "board" | "tabelle" | "pre";
-export type Dialog = null | "versions" | "projects" | "settings" | "trash";
+export type Dialog = null | "versions" | "projects" | "settings" | "trash" | "order" | "brief";
 
 export interface Ui {
   projectId: string | null;
@@ -38,6 +40,10 @@ export interface Ui {
   report: string | null;
   /** Frontend im Lastenheft, null = alle */
   reportFe: string | null;
+  /** Phase, die der Auftragsdialog gerade zeigt */
+  orderPhase: string | null;
+  /** eingelesene, noch nicht übernommene Rückmeldung */
+  feedback: Feedback | null;
   navOpen: boolean;
   mobile: boolean;
   dragId: string | null;
@@ -89,6 +95,8 @@ export class Store {
       dialog: null,
       report: null,
       reportFe: null,
+      orderPhase: null,
+      feedback: null,
       navOpen: false,
       mobile: !!mq?.matches,
       dragId: null,
@@ -187,7 +195,7 @@ export class Store {
 
   selectProject(id: string | null) {
     this.savePrefs({ projectId: id });
-    this.set({ projectId: id, selFe: null, selMenu: null, selReq: null, boardVersion: null, gap: null, search: "", fPrio: "", fStatus: "", report: null, reportFe: null, editMenu: null, editFe: null, colorMenu: null });
+    this.set({ projectId: id, selFe: null, selMenu: null, selReq: null, boardVersion: null, gap: null, search: "", fPrio: "", fStatus: "", report: null, reportFe: null, orderPhase: null, feedback: null, editMenu: null, editFe: null, colorMenu: null });
   }
   private addProject(p: Project) {
     this.projects = [...this.projects, p];
@@ -263,6 +271,66 @@ export class Store {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     if (missing) this.flash(missing + " Anhänge fehlen im Export, sie liegen nicht auf diesem Gerät");
+  }
+
+  // ------------------------------------------------------------ Umsetzung mit Claude
+
+  setBrief(key: Exclude<keyof Brief, "u">, value: string) {
+    this.edit((p) => {
+      p.brief[key] = value;
+    });
+  }
+  private download(bytes: Uint8Array | string, name: string, type: string) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  /** Auftrag für eine Phase als ZIP zusammenstellen: auftrag.json, AUFTRAG.md und die Anhänge als Dateien. */
+  async buildOrderZip(versionId: string, phaseId: string): Promise<{ name: string; bytes: Uint8Array; missing: number; count: number } | null> {
+    const p = this.project;
+    const order = p && buildOrder(p, versionId, phaseId);
+    if (!p || !order) return null;
+    const entries: ZipEntry[] = [
+      { path: "auftrag.json", bytes: textBytes(JSON.stringify(order, null, 2)) },
+      { path: "AUFTRAG.md", bytes: textBytes(orderMarkdown(order)) },
+    ];
+    let missing = 0;
+    for (const r of planOrder(p, versionId, phaseId).todo)
+      for (const [i, a] of r.attachments.entries()) {
+        const bytes = await this.attachmentBytes(p.id, a).catch(() => null);
+        if (bytes) entries.push({ path: attachmentFile(r, a, i), bytes });
+        else missing++;
+      }
+    const name = (fileSlug(p.name) || "projekt") + "-" + order.id + ".zip";
+    return { name, bytes: zip(entries), missing, count: order.requirements.length };
+  }
+  async exportOrder(versionId: string, phaseId: string) {
+    const z = await this.buildOrderZip(versionId, phaseId);
+    if (!z) return;
+    this.download(z.bytes, z.name, "application/zip");
+    this.flash("Auftrag mit " + z.count + " Anforderungen exportiert" + (z.missing ? ", " + z.missing + " Anhänge fehlen (nicht auf diesem Gerät)" : ""));
+  }
+  /** Rückmeldung einlesen. Übernommen wird sie erst nach Bestätigung in der Vorschau. */
+  async loadFeedback(file: File) {
+    try {
+      this.set({ feedback: parseFeedback(JSON.parse(await file.text())) });
+    } catch {
+      this.flash("Datei ist keine gültige Rückmeldung");
+    }
+  }
+  applyFeedback() {
+    const f = this.ui.feedback;
+    if (!f) return;
+    let n = 0;
+    this.edit((p) => {
+      n = applyFeedback(p, f);
+    });
+    this.set({ feedback: null });
+    this.flash("Rückmeldung für " + n + " Anforderungen übernommen");
   }
 
   // ------------------------------------------------------------ Anforderungen

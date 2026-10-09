@@ -15,6 +15,8 @@ Live: https://hvonelling.github.io/anforderungskatalog/
 - Je Anforderung: Beschreibung, User Story, Akzeptanzkriterien, Voraussetzungen, Anhänge, Verlauf der Verschiebungen.
 - Versionen mit Phasen, Lastenheft je Version zum Drucken oder als PDF.
 - Papierkorb für gelöschte Anforderungen.
+- Steckbrief je Projekt mit den Rahmenbedingungen für die Umsetzung.
+- Umsetzung mit Claude Code: eine Phase als Auftrag exportieren (ZIP mit auftrag.json, AUFTRAG.md und Anhängen), Rückmeldung mit Vorschau einlesen. Vierter Status „Zu prüfen“, Kennzeichen „geändert seit Umsetzung“.
 - Export und Import je Projekt als JSON-Datei.
 - Helle und dunkle Darstellung.
 - Am Handy: erfassen, bearbeiten, nachsehen. Board, Tabelle, Versionen-Verwaltung und Lastenheft gibt es nur am PC.

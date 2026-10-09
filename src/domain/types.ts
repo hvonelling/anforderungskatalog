@@ -5,13 +5,55 @@
 // Löschzeitpunkt in "gone", damit sie auf anderen Geräten nicht wieder auftauchen.
 
 export type Prio = "M" | "S" | "C" | "W";
-export type Status = "open" | "wip" | "done";
+export type Status = "open" | "wip" | "review" | "done";
 export type PreType = "tech" | "user";
 
 /** Farben für Menüpunkte. Die Farbwerte stehen je Design in styles.css (--c-<Schlüssel>). */
 export const COLORS = ["rot", "orange", "gelb", "gruen", "tuerkis", "blau", "violett", "pink"] as const;
 export type Color = (typeof COLORS)[number];
 export const COLOR_LABEL: Record<Color, string> = { rot: "Rot", orange: "Orange", gelb: "Gelb", gruen: "Grün", tuerkis: "Türkis", blau: "Blau", violett: "Violett", pink: "Pink" };
+
+/** Steckbrief: Rahmenbedingungen, die für die Umsetzung eines Projekts nötig sind und in keiner einzelnen Anforderung stehen. */
+export interface Brief {
+  purpose: string;
+  users: string;
+  tech: string;
+  hosting: string;
+  auth: string;
+  data: string;
+  design: string;
+  codePath: string;
+  taboos: string;
+  u: number;
+}
+export const BRIEF_FIELDS: { key: Exclude<keyof Brief, "u">; label: string; hint: string }[] = [
+  { key: "purpose", label: "Zweck", hint: "Wozu gibt es das Programm, welches Problem löst es?" },
+  { key: "users", label: "Nutzergruppen", hint: "Wer arbeitet damit, in welcher Rolle, wie viele Personen?" },
+  { key: "tech", label: "Technik", hint: "Vorgaben zu Sprache, Frameworks, Datenbank. Leer lassen, wenn frei wählbar." },
+  { key: "hosting", label: "Betrieb und Hosting", hint: "Wo soll es laufen: eigener Server, Cloud, nur im Browser?" },
+  { key: "auth", label: "Anmeldung und Rechte", hint: "Wie melden sich Nutzer an, welche Rolle darf was?" },
+  { key: "data", label: "Daten und Schnittstellen", hint: "Welche Daten entstehen, was ist vertraulich, welche Systeme sind anzubinden?" },
+  { key: "design", label: "Gestaltung", hint: "Farben, Schrift, Vorbilder, hell oder dunkel, Handy oder nur PC." },
+  { key: "codePath", label: "Ablageort des Codes", hint: "Ordner auf diesem PC und, falls vorhanden, das Git-Repo. Beispiel: C:\\Users\\Henrik\\Documents\\CLaude\\Energieportal" },
+  { key: "taboos", label: "Ausdrücklich nicht", hint: "Was nicht gebaut oder nicht angefasst werden soll." },
+];
+
+/** Inhalt einer Anforderung, soweit er für die Umsetzung zählt. */
+export interface ImplSnap {
+  title: string;
+  desc: string;
+  story: string;
+  criteria: string[];
+}
+/** Vermerk einer Umsetzung, gesetzt beim Einlesen einer Rückmeldung. */
+export interface Impl {
+  at: number;
+  /** Kennung des Auftrags */
+  order: string;
+  note: string;
+  /** Stand, der umgesetzt wurde. Weicht der heutige Inhalt ab, gilt die Anforderung als „geändert seit Umsetzung“. */
+  snap: ImplSnap;
+}
 
 /** Ein Frontend des Produkts (Admin, Kunde, Dienstleister …) mit eigenem Menübaum. */
 export interface Frontend {
@@ -86,6 +128,8 @@ export interface Req {
   also: string[];
   /** gesetzt = Teilanforderung dieser Anforderung (nur eine Ebene). Ort (Menüpunkt, Frontend) folgt dann der großen Anforderung. */
   parentId: string | null;
+  /** null = noch nie über einen Auftrag umgesetzt */
+  impl: Impl | null;
   prio: Prio;
   status: Status;
   versionId: string | null;
@@ -111,6 +155,7 @@ export interface Project {
   frontends: Frontend[];
   /** false = Projekt aus der Zeit vor den Frontends; die App fragt einmal, ob die Hauptmenüpunkte Frontends werden sollen */
   feAsked: boolean;
+  brief: Brief;
   menu: MenuNode[];
   versions: Version[];
   prereqs: Prereq[];
@@ -134,7 +179,8 @@ export const PRIOS: Prio[] = ["M", "S", "C", "W"];
 export const STATUS: Record<Status, { label: string; rank: number }> = {
   open: { label: "Offen", rank: 0 },
   wip: { label: "In Arbeit", rank: 1 },
-  done: { label: "Erledigt", rank: 2 },
+  review: { label: "Zu prüfen", rank: 2 },
+  done: { label: "Erledigt", rank: 3 },
 };
-export const STATUSES: Status[] = ["open", "wip", "done"];
+export const STATUSES: Status[] = ["open", "wip", "review", "done"];
 export const PRE_TYPE: Record<PreType, string> = { tech: "Technisch", user: "Anwenderbezogen" };

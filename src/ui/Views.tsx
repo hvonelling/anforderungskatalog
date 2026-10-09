@@ -31,6 +31,16 @@ function PartsNote({ i }: { i: ReqInfo }) {
   );
 }
 
+/** Kennzeichen „seit der Umsetzung geändert“. */
+function ChangedNote({ i }: { i: ReqInfo }) {
+  if (!i.changed) return null;
+  return (
+    <span class="tag warn-tag" title="Seit der Umsetzung inhaltlich geändert">
+      geändert
+    </span>
+  );
+}
+
 /** Hinweis auf weitere betroffene Frontends. */
 function AlsoNote({ i }: { i: ReqInfo }) {
   if (!i.also.length) return null;
@@ -120,6 +130,7 @@ export function ListView({ s, p, ix, reqs }: Props) {
                 <PrioBadge prio={r.prio} />
                 <span class={"cut title" + (r.title ? "" : " untitled")}>{r.title || "Ohne Titel"}</span>
                 <div class="meta">
+                  <ChangedNote i={i} />
                   <AlsoNote i={i} />
                   <PartsNote i={i} />
                   <PreNote links={i.links.length} openN={i.preOpen} />
@@ -225,6 +236,7 @@ export function BoardView({ s, p, ix, reqs }: Props) {
                   <div class="tiny dim" style="display:flex;gap:8px;align-items:center">
                     <span class="cut">{i.path}</span>
                     <span style="margin-left:auto;flex:none;display:flex;gap:8px">
+                      <ChangedNote i={i} />
                       <PartsNote i={i} />
                       <PreNote links={i.links.length} openN={i.preOpen} />
                     </span>
@@ -278,7 +290,7 @@ export function TableView({ s, p, ix, reqs }: Props) {
                   {r.key}
                 </td>
                 <td class={r.title ? "" : "untitled"}>
-                  {r.title || "Ohne Titel"} <PartsNote i={i} />
+                  {r.title || "Ohne Titel"} <PartsNote i={i} /> <ChangedNote i={i} />
                 </td>
                 <td>
                   <PrioBadge prio={r.prio} />
@@ -399,8 +411,9 @@ function ProgRow({ name, g, sub, head, onClick }: { name: string; g: Progress; s
       <span class="cut" style={head ? "font-weight:600" : ""} title={name}>
         {name}
       </span>
-      <div class="bar" role="img" aria-label={g.done + " erledigt, " + g.wip + " in Arbeit, " + g.open + " offen"}>
+      <div class="bar" role="img" aria-label={g.done + " erledigt, " + g.review + " zu prüfen, " + g.wip + " in Arbeit, " + g.open + " offen"}>
         <div class="d" style={{ width: pct(g.done, g.total) + "%" }} />
+        <div class="r" style={{ width: pct(g.review, g.total) + "%" }} />
         <div class="w" style={{ width: pct(g.wip, g.total) + "%" }} />
       </div>
       <span class="mono muted" style="white-space:nowrap;text-align:right">
@@ -416,6 +429,9 @@ const Legend = () => (
   <span class="legend small muted" style="margin-left:auto">
     <span>
       <i class="d" /> erledigt
+    </span>
+    <span>
+      <i class="r" /> zu prüfen
     </span>
     <span>
       <i class="w" /> in Arbeit
@@ -444,9 +460,11 @@ export function OverviewView({ s, p }: { s: Store; p: Project }) {
           </span>
         </div>
         <div class="kpi">
-          <span class="label">In Arbeit</span>
-          <b>{o.all.wip}</b>
-          <span class="small dim">{o.all.open} offen</span>
+          <span class="label">Zu prüfen</span>
+          <b>{o.all.review}</b>
+          <span class="small dim">
+            {o.all.wip} in Arbeit · {o.all.open} offen
+          </span>
         </div>
         <div class="kpi">
           <span class="label">Akzeptanzkriterien</span>

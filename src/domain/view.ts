@@ -1,7 +1,7 @@
 // Abgeleitete Sichten auf ein Projekt: Baum, Filter, Gruppen, Board, Tabelle, Übersicht, Lastenheft.
 // Reine Funktionen ohne Oberfläche, damit sie sich einzeln prüfen lassen.
 
-import { cmpKey } from "./model";
+import { changedSinceImpl, cmpKey, storySentence } from "./model";
 import type { Color, Frontend, MenuNode, Phase, Prereq, Prio, Project, Req, Status, Version } from "./types";
 import { PRIO, STATUS } from "./types";
 
@@ -82,13 +82,14 @@ export const inFrontend = (r: Req, fe: string) => r.fe === fe || r.also.includes
 
 // ---------------------------------------------------------------- Lücken
 
-export type GapKey = "noTitle" | "noDesc" | "noCrit" | "noMenu" | "mustUnplanned" | "doneOpenParts";
+export type GapKey = "noTitle" | "noDesc" | "noCrit" | "noMenu" | "mustUnplanned" | "doneOpenParts" | "changed";
 export const GAPS: { key: GapKey; label: string; hint: string }[] = [
   { key: "noTitle", label: "Ohne Titel", hint: "Anforderungen, die noch keinen Titel haben." },
   { key: "noDesc", label: "Ohne Beschreibung", hint: "Weder Beschreibung noch User Story. Won’t-Anforderungen zählen nicht mit." },
   { key: "noCrit", label: "Ohne Akzeptanzkriterien", hint: "Es ist nicht festgelegt, wann die Anforderung als erfüllt gilt. Won’t-Anforderungen zählen nicht mit." },
   { key: "noMenu", label: "Ohne Menüpunkt", hint: "Keinem Punkt der Menüstruktur zugeordnet." },
   { key: "mustUnplanned", label: "Must, nicht eingeplant", hint: "Must-Anforderungen ohne Version." },
+  { key: "changed", label: "Geändert seit Umsetzung", hint: "Titel, Beschreibung, User Story oder Kriterien wurden geändert, nachdem die Anforderung umgesetzt war. Der nächste Auftrag nimmt sie wieder auf." },
   { key: "doneOpenParts", label: "Erledigt, aber Teile offen", hint: "Die Anforderung steht auf Erledigt, obwohl Teilanforderungen noch nicht erledigt sind. Won’t-Teile zählen nicht mit." },
 ];
 
@@ -106,6 +107,8 @@ export function gapPred(p: Project, key: GapKey): (r: Req) => boolean {
       return (r) => !r.menuId || !menuIds.has(r.menuId);
     case "mustUnplanned":
       return (r) => r.prio === "M" && (!r.versionId || !verIds.has(r.versionId));
+    case "changed":
+      return changedSinceImpl;
     case "doneOpenParts": {
       const open = new Set(p.reqs.filter((r) => r.parentId && !r.deletedAt && r.prio !== "W" && r.status !== "done").map((r) => r.parentId!));
       return (r) => r.status === "done" && open.has(r.id);
@@ -180,6 +183,8 @@ export interface ReqInfo {
   partsDone: number;
   /** Erledigt gesetzt, obwohl Teile (außer Won’t) noch offen sind */
   partsWarn: boolean;
+  /** inhaltlich geändert, nachdem sie umgesetzt war */
+  changed: boolean;
 }
 
 export function reqInfo(p: Project, ix: MenuIndex, r: Req): ReqInfo {
@@ -205,6 +210,7 @@ export function reqInfo(p: Project, ix: MenuIndex, r: Req): ReqInfo {
     parts,
     partsDone: parts.filter((x) => x.status === "done").length,
     partsWarn: r.status === "done" && parts.some((x) => x.prio !== "W" && x.status !== "done"),
+    changed: changedSinceImpl(r),
   };
 }
 
@@ -319,6 +325,7 @@ export interface Progress {
   total: number;
   open: number;
   wip: number;
+  review: number;
   done: number;
   critTotal: number;
   critDone: number;
@@ -328,7 +335,7 @@ export interface Progress {
 function progress(p: Project, reqs: Req[]): Progress {
   const done = new Map(p.prereqs.map((q) => [q.id, q.done]));
   const openPre = new Set<string>();
-  const out: Progress = { total: reqs.length, open: 0, wip: 0, done: 0, critTotal: 0, critDone: 0, preOpen: 0 };
+  const out: Progress = { total: reqs.length, open: 0, wip: 0, review: 0, done: 0, critTotal: 0, critDone: 0, preOpen: 0 };
   for (const r of reqs) {
     out[r.status] += 1;
     out.critTotal += r.criteria.length;
@@ -398,11 +405,7 @@ export interface Report {
   pre: Prereq[];
 }
 
-export function storyText(r: Req): string {
-  const s = r.story;
-  if (!s.role.trim() && !s.goal.trim()) return "";
-  return "Als " + (s.role || "…") + " möchte ich " + (s.goal || "…") + (s.benefit ? ", damit " + s.benefit : "") + ".";
-}
+export const storyText = (r: Req): string => storySentence(r);
 
 /** feId = nur dieses Frontend (samt „betrifft auch“), null = alle, dann nach Frontend gegliedert. */
 export function report(p: Project, ix: MenuIndex, versionId: string, feId: string | null = null): Report | null {

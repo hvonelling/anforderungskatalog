@@ -420,6 +420,10 @@ textarea:focus-visible,
   border-color: var(--accent);
   background: linear-gradient(90deg, var(--accent) 50%, transparent 50%);
 }
+.dot.review {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 38%, transparent 42%);
+}
 .dot.done {
   border-color: var(--accent);
   background: var(--accent);
@@ -925,6 +929,10 @@ table.t tbody tr.on {
 .bar .d {
   background: var(--accent);
 }
+.bar .r {
+  background: var(--accent);
+  opacity: 0.55;
+}
 .bar .w {
   background: repeating-linear-gradient(135deg, var(--accent) 0 3px, transparent 3px 6px);
 }
@@ -947,6 +955,10 @@ table.t tbody tr.on {
 }
 .legend i.d {
   background: var(--accent);
+}
+.legend i.r {
+  background: var(--accent);
+  opacity: 0.55;
 }
 .legend i.w {
   background: repeating-linear-gradient(135deg, var(--accent) 0 3px, transparent 3px 6px);
@@ -1549,6 +1561,43 @@ table.t tbody tr.on {
   margin-left: 24px;
   padding-left: 12px;
   border-left: 2px solid #c9d0cf;
+}
+
+.dialog.wide {
+  width: 760px;
+}
+.warn-tag {
+  color: var(--warn);
+  border-color: var(--warn-bd);
+}
+.impl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--sel-bd);
+  background: var(--sel);
+  color: var(--text);
+  border-radius: 3px;
+}
+.impl.changed {
+  border-color: var(--warn-bd);
+  background: var(--warn-bg);
+}
+.impl.changed b {
+  color: var(--warn);
+}
+.fb-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+.fb-row ul {
+  margin: 0;
+  padding-left: 18px;
 }
 
 .only-mobile {

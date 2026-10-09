@@ -5,7 +5,7 @@ import { useStore, type Store, type View } from "../app/store";
 import { filterReqs, menuIndex } from "../domain/view";
 import type { Theme } from "../storage/local";
 import { Detail } from "./Detail";
-import { NewProject, ProjectsDialog, SettingsDialog, TrashDialog, VersionsDialog } from "./Dialogs";
+import { BriefDialog, NewProject, OrderDialog, ProjectsDialog, SettingsDialog, TrashDialog, VersionsDialog } from "./Dialogs";
 import { Dialog, fmtDateTime, val } from "./parts";
 import { Report } from "./Report";
 import { Sidebar } from "./Sidebar";
@@ -155,6 +155,9 @@ export function App() {
             <button type="button" class="btn only-desk" onClick={openReport}>
               Lastenheft
             </button>
+            <button type="button" class="btn only-desk" title="Phase als Auftrag für Claude exportieren und Rückmeldung einlesen" onClick={() => s.set({ dialog: "order", feedback: null })}>
+              Umsetzung
+            </button>
             <button type="button" class="btn only-desk" onClick={() => s.set({ dialog: "projects" })}>
               Projekte
             </button>
@@ -191,6 +194,8 @@ export function App() {
         {ui.dialog === "projects" && <ProjectsDialog s={s} />}
         {ui.dialog === "trash" && <TrashDialog s={s} p={p} />}
         {ui.dialog === "settings" && <SettingsDialog s={s} />}
+        {ui.dialog === "order" && <OrderDialog s={s} p={p} />}
+        {ui.dialog === "brief" && <BriefDialog s={s} p={p} />}
         {askFrontends && (
           <Dialog title="Neu: Frontends" onClose={() => s.answerFrontends(false)}>
             <span>

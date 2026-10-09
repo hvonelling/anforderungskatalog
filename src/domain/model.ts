@@ -1,6 +1,6 @@
 // Anlegen, Stempeln, Zusammenführen, Import und Export von Projekten.
 
-import type { Attachment, Color, Frontend, MenuNode, Phase, Prereq, Project, Req, Status, Prio, Version } from "./types";
+import type { Attachment, Brief, Color, Frontend, Impl, ImplSnap, MenuNode, Phase, Prereq, Project, Req, Status, Prio, Version } from "./types";
 import { COLORS, PRIO, STATUS } from "./types";
 
 export function uid(prefix = ""): string {
@@ -25,8 +25,21 @@ export const cmpKey = (a: string, b: string) => a.localeCompare(b, "de", { numer
 export const MAIN_FE = "fmain";
 const mainFrontend = (): Frontend => ({ id: MAIN_FE, name: "Allgemein", o: 0, u: 0 });
 
+export const emptyBrief = (): Brief => ({ purpose: "", users: "", tech: "", hosting: "", auth: "", data: "", design: "", codePath: "", taboos: "", u: 0 });
+
+/** Der Satz der User Story, leer, wenn weder Rolle noch Ziel angegeben sind. */
+export function storySentence(r: Pick<Req, "story">): string {
+  const s = r.story;
+  if (!s.role.trim() && !s.goal.trim()) return "";
+  return "Als " + (s.role || "…") + " möchte ich " + (s.goal || "…") + (s.benefit ? ", damit " + s.benefit : "") + ".";
+}
+/** Der für die Umsetzung maßgebliche Inhalt einer Anforderung. */
+export const implSnap = (r: Req): ImplSnap => ({ title: r.title.trim(), desc: r.desc.trim(), story: storySentence(r), criteria: r.criteria.map((c) => c.text.trim()).filter(Boolean) });
+/** Wurde die Anforderung seit ihrer Umsetzung inhaltlich geändert? */
+export const changedSinceImpl = (r: Req): boolean => !!r.impl && JSON.stringify(r.impl.snap) !== JSON.stringify(implSnap(r));
+
 export function emptyProject(name: string, now = Date.now()): Project {
-  return { format: 1, id: uid("j"), name, seq: 0, frontends: [mainFrontend()], feAsked: true, menu: [], versions: [], prereqs: [], reqs: [], gone: {}, createdAt: now, deletedAt: null, u: now };
+  return { format: 1, id: uid("j"), name, seq: 0, frontends: [mainFrontend()], feAsked: true, brief: emptyBrief(), menu: [], versions: [], prereqs: [], reqs: [], gone: {}, createdAt: now, deletedAt: null, u: now };
 }
 
 function blankReq(now: number): Req {
@@ -38,6 +51,7 @@ function blankReq(now: number): Req {
     fe: null,
     also: [],
     parentId: null,
+    impl: null,
     prio: "S",
     status: "open",
     versionId: null,
@@ -196,6 +210,7 @@ export function stamp(prev: Project, next: Project, now = Date.now()) {
     noU,
   );
   if (prev.name !== next.name || prev.deletedAt !== next.deletedAt) next.u = now;
+  if (noU(prev.brief) !== noU(next.brief)) next.brief.u = now;
   next.gone = gone;
 }
 
@@ -247,6 +262,7 @@ export function mergeProject(a: Project, b: Project): Project {
     seq: Math.max(a.seq, b.seq),
     frontends: mergeCol(a.frontends, b.frontends, gone).sort(byOrder),
     feAsked: a.feAsked || b.feAsked,
+    brief: b.brief.u > a.brief.u || (b.brief.u === a.brief.u && JSON.stringify(b.brief) > JSON.stringify(a.brief)) ? b.brief : a.brief,
     menu: mergeCol(a.menu, b.menu, gone).sort(byOrder),
     versions,
     prereqs: mergeCol(a.prereqs, b.prereqs, gone).sort(byOrder),
@@ -369,6 +385,21 @@ const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite
 const arr = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? (v.filter((x) => x && typeof x === "object") as Record<string, unknown>[]) : []);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
+function readBrief(v: unknown): Brief {
+  const b = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const out = emptyBrief();
+  for (const k of Object.keys(out) as (keyof Brief)[]) if (k !== "u") out[k] = str(b[k]);
+  out.u = num(b.u, 0);
+  return out;
+}
+function readImpl(v: unknown): Impl | null {
+  if (!v || typeof v !== "object") return null;
+  const i = v as Record<string, unknown>;
+  const s = (i.snap && typeof i.snap === "object" ? i.snap : {}) as Record<string, unknown>;
+  if (typeof i.at !== "number") return null;
+  return { at: i.at, order: str(i.order), note: str(i.note), snap: { title: str(s.title), desc: str(s.desc), story: str(s.story), criteria: strs(s.criteria) } };
+}
+
 /**
  * Beliebig geladenen Stand in ein gültiges Projekt überführen. Wirft, wenn es keines ist.
  * Ältere Stände (ohne Frontends, Farben, Teilanforderungen) werden dabei ohne Verlust ergänzt.
@@ -386,6 +417,7 @@ export function normalizeProject(raw: unknown, now = Date.now()): Project {
     frontends: arr(j.frontends).map((f, i): Frontend => ({ id: str(f.id) || uid("f"), name: str(f.name, "Frontend"), o: num(f.o, i), u: num(f.u, now) })),
     // Stände aus der Zeit vor den Frontends: einmal nachfragen, ob die Hauptmenüpunkte Frontends sind.
     feAsked: hasFrontends ? j.feAsked !== false : false,
+    brief: readBrief(j.brief),
     menu: arr(j.menu).map(
       (m, i): MenuNode => ({
         id: str(m.id) || uid("m"),
@@ -419,6 +451,7 @@ export function normalizeProject(raw: unknown, now = Date.now()): Project {
         fe: str(r.fe) || null,
         also: strs(r.also),
         parentId: str(r.parentId) || null,
+        impl: readImpl(r.impl),
         prio: (str(r.prio) in PRIO ? r.prio : "S") as Prio,
         status: (str(r.status) in STATUS ? r.status : "open") as Status,
         versionId: str(r.versionId) || null,

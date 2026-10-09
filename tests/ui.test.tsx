@@ -358,4 +358,78 @@ describe("Oberfläche", () => {
     expect($$(".paper .item.part").length).toBe(1);
     await click(byText(".report-bar button", "Schließen"));
   });
+
+  it("pflegt den Steckbrief und stellt einen Auftrag als ZIP zusammen", async () => {
+    await click(byText(".actions button", "Umsetzung"));
+    expect($(".dialog")!.textContent).toContain("Umsetzung mit Claude");
+    expect($(".dialog")!.textContent).toContain("Im Steckbrief fehlen 9 von 9 Angaben");
+    await click(byText(".dialog .hrow button", "Steckbrief"));
+    const fields = $$(".dialog textarea") as HTMLTextAreaElement[];
+    expect(fields.length).toBe(9);
+    await type(fields[0], "Portal für Energiekunden");
+    await type(fields[7], "C:\\Code\\Energieportal");
+    expect(store.project!.brief).toMatchObject({ purpose: "Portal für Energiekunden", codePath: "C:\\Code\\Energieportal" });
+    await click(byText(".dialog button", "Zur Umsetzung"));
+    expect($(".dialog")!.textContent).toContain("Im Steckbrief fehlen 7 von 9 Angaben");
+
+    const p = store.project!;
+    const v = p.versions[0];
+    const admin = p.reqs.find((r) => r.title === "Benutzer anlegen")!;
+    const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+    Object.defineProperty(bytes, "arrayBuffer", { value: async () => bytes.buffer });
+    await store.blobs.put("abild", bytes);
+    await act(() => store.upd(admin.id, (r) => r.attachments.push({ id: "abild", name: "maske.png", type: "image/png", size: 7 })));
+    const z = (await store.buildOrderZip(v.id, v.phases[0].id))!;
+    expect(z.name).toMatch(/^Energieportal-auftrag-\d{4}-\d\d-\d\d-[a-z0-9]{5}\.zip$/);
+    expect(z.missing).toBe(0);
+    expect(z.count).toBeGreaterThan(0);
+    const text = new TextDecoder("latin1").decode(z.bytes);
+    for (const name of ["auftrag.json", "AUFTRAG.md", "anhaenge/" + admin.key + "/01-maske.png"]) expect(text).toContain(name);
+    // Für die Gegenprobe mit einem echten Entpacker
+    if (process.env.AK_ZIP_OUT) (await import("node:fs")).writeFileSync(process.env.AK_ZIP_OUT, z.bytes);
+  });
+
+  it("liest eine Rückmeldung mit Vorschau ein und erkennt spätere Änderungen", async () => {
+    const p = store.project!;
+    const admin = p.reqs.find((r) => r.title === "Benutzer anlegen")!;
+    await act(() => store.upd(admin.id, (r) => r.criteria.push({ id: "ck1", text: "Pflichtfelder geprüft", done: false })));
+    const fb = { format: "anforderungskatalog-rueckmeldung-v1", orderId: "auftrag-2026-10-09-test1", projectId: p.id, summary: "Phase 1 gebaut.", items: [{ id: admin.id, key: admin.key, status: "done", note: "Maske und Speichern fertig.", criteriaDone: ["ck1"] }] };
+    const file = new File(["x"], "rueckmeldung.json");
+    Object.defineProperty(file, "text", { configurable: true, value: async () => JSON.stringify(fb) });
+    await act(() => store.loadFeedback(file));
+    const dlg = $(".dialog")!;
+    expect(dlg.textContent).toContain("Vorschau der Rückmeldung");
+    expect(dlg.textContent).toContain("Phase 1 gebaut.");
+    expect(dlg.textContent).toContain("Status: Offen → Zu prüfen");
+    expect(dlg.textContent).toContain("Kriterium erfüllt: Pflichtfelder geprüft");
+    // Noch ist nichts geändert.
+    expect(store.project!.reqs.find((r) => r.id === admin.id)!.status).toBe("open");
+    await click(byText(".dialog button", "Übernehmen"));
+    const after = store.project!.reqs.find((r) => r.id === admin.id)!;
+    expect(after.status).toBe("review");
+    expect(after.criteria.find((c) => c.id === "ck1")!.done).toBe(true);
+    expect(after.impl!.note).toBe("Maske und Speichern fertig.");
+    await click($(".dialog-head .icon-btn")!);
+
+    await click(byText(".row", "Benutzer anlegen"));
+    expect($(".drawer .impl")!.textContent).toContain("Umgesetzt");
+    expect($(".drawer .impl")!.textContent).toContain("Maske und Speichern fertig.");
+    expect($$(".drawer .seg:not(.prio-seg) button").map((b) => b.textContent)).toEqual(["Offen", "In Arbeit", "Zu prüfen", "Erledigt"]);
+    await type($(".title-input") as HTMLTextAreaElement, "Benutzer anlegen und einladen");
+    expect($(".drawer .impl.changed")!.textContent).toContain("Geändert seit der Umsetzung");
+    expect(byText(".row", "Benutzer anlegen und einladen").textContent).toContain("geändert");
+    // Der nächste Auftrag der Phase nimmt sie wieder auf.
+    const v = store.project!.versions[0];
+    const z = (await store.buildOrderZip(v.id, v.phases[0].id))!;
+    expect(new TextDecoder().decode(z.bytes)).toContain("Geändert seit der Umsetzung");
+    // Falsches Projekt wird abgewiesen.
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify({ ...fb, projectId: "anderes" }) });
+    await click($(".drawer-head .icon-btn")!);
+    await click(byText(".actions button", "Umsetzung"));
+    await act(() => store.loadFeedback(file));
+    expect($(".dialog .err-box")!.textContent).toContain("anderen Projekt");
+    expect((byText(".dialog button", "Übernehmen") as HTMLButtonElement).disabled).toBe(true);
+    await click(byText(".dialog button", "Verwerfen"));
+    await click($(".dialog-head .icon-btn")!);
+  });
 });

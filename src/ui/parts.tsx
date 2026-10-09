@@ -34,10 +34,10 @@ export function Chip({ on, onClick, children, mono, title }: { on: boolean; onCl
   );
 }
 
-export function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ComponentChildren }) {
+export function Dialog({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ComponentChildren; wide?: boolean }) {
   return (
     <div class="veil" onClick={onClose}>
-      <div class="dialog" onClick={stop} role="dialog" aria-label={title}>
+      <div class={"dialog" + (wide ? " wide" : "")} onClick={stop} role="dialog" aria-label={title}>
         <div class="dialog-head">
           <span>{title}</span>
           <button type="button" class="icon-btn plain" style="margin-left:auto;font-size:18px" onClick={onClose} title="Schließen (Esc)">
