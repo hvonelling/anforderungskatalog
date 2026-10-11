@@ -97,7 +97,10 @@ export interface Prereq {
 export interface Criterion {
   id: string;
   text: string;
+  /** Haken des Nutzers: von ihm geprüft und abgenommen. Eine Rückmeldung setzt ihn nie. */
   done: boolean;
+  /** Laut letzter Rückmeldung läuft der automatische Test zu diesem Kriterium grün. */
+  tested?: boolean;
 }
 /** Nur die Beschreibung des Anhangs. Der Inhalt liegt getrennt (IndexedDB bzw. eigene Datei im Repo). */
 export interface Attachment {

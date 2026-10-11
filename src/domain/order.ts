@@ -22,7 +22,8 @@ export interface OrderReq {
   status: string;
   description: string;
   userStory: string;
-  criteria: { id: string; text: string; done: boolean }[];
+  /** done = vom Nutzer abgenommen, tested = Test grün laut letzter Rückmeldung */
+  criteria: { id: string; text: string; done: boolean; tested: boolean }[];
   prerequisites: { title: string; type: string; done: boolean }[];
   /** Kennung der großen Anforderung, zu der diese gehört */
   partOf: string | null;
@@ -98,7 +99,7 @@ export function buildOrder(p: Project, versionId: string, phaseId: string, now =
     status: STATUS[r.status].label,
     description: r.desc,
     userStory: storySentence(r),
-    criteria: r.criteria.map((c) => ({ id: c.id, text: c.text, done: c.done })),
+    criteria: r.criteria.map((c) => ({ id: c.id, text: c.text, done: c.done, tested: !!c.tested })),
     prerequisites: r.prereqIds
       .map((i) => p.prereqs.find((q) => q.id === i))
       .filter((q): q is NonNullable<typeof q> => !!q)
@@ -154,7 +155,7 @@ export function orderMarkdown(o: Order): string {
     if (r.userStory) L.push(`_${r.userStory}_`, "");
     if (r.criteria.length) {
       L.push("Akzeptanzkriterien:", "");
-      for (const c of r.criteria) L.push(`- [${c.done ? "x" : " "}] ${c.text}`);
+      for (const c of r.criteria) L.push(`- [${c.done ? "x" : " "}] ${c.text}${c.tested ? " (Test grün)" : ""}`);
       L.push("");
     }
     if (r.prerequisites.length) {
@@ -198,8 +199,13 @@ export interface FeedbackItem {
   /** neuer Status: review (umgesetzt, zu prüfen), wip (teilweise), open (nicht begonnen) */
   status?: Status;
   note?: string;
-  /** Kennungen der Kriterien, deren Test grün ist */
-  criteriaDone?: string[];
+  /**
+   * Kennungen der Kriterien, deren automatischer Test grün ist (bei neuen Kriterien aus addCriteria ihr Text).
+   * Das setzt nur die Markierung „Test grün“. Den Haken setzt allein der Nutzer.
+   */
+  criteriaTested?: string[];
+  /** Kennungen abgehakter Kriterien, die der Nutzer neu prüfen soll: Der Haken wird entfernt. */
+  criteriaReopen?: string[];
   /** geklärte Ergänzungen aus den Rückfragen */
   update?: { description?: string; addCriteria?: string[] };
 }
@@ -233,7 +239,9 @@ export function parseFeedback(raw: unknown): Feedback {
           key: typeof x.key === "string" ? x.key : undefined,
           status: st === "open" || st === "wip" || st === "review" ? st : undefined,
           note: typeof x.note === "string" ? x.note : undefined,
-          criteriaDone: strs(x.criteriaDone),
+          // Ältere Rückmeldungen nennen die getesteten Kriterien „criteriaDone“.
+          criteriaTested: [...new Set([...strs(x.criteriaTested), ...strs(x.criteriaDone)])],
+          criteriaReopen: strs(x.criteriaReopen),
           update: { description: typeof u.description === "string" ? u.description : undefined, addCriteria: strs(u.addCriteria).map((t) => t.trim()).filter(Boolean) },
         };
       }),
@@ -247,7 +255,10 @@ export interface FeedbackChange {
   /** null = Status bleibt */
   statusFrom: Status;
   statusTo: Status | null;
-  criteriaTicked: string[];
+  /** bekommen neu die Markierung „Test grün“ */
+  criteriaTested: string[];
+  /** abgehakte Kriterien, deren Haken entfernt wird */
+  criteriaReopened: string[];
   criteriaAdded: string[];
   descChanged: boolean;
   note: string;
@@ -270,7 +281,8 @@ export function previewFeedback(p: Project, f: Feedback): FeedbackPreview {
       unknown.push(it.key || it.id);
       continue;
     }
-    const tick = new Set(it.criteriaDone);
+    const tested = new Set(it.criteriaTested);
+    const reopen = new Set(it.criteriaReopen);
     const add = (it.update?.addCriteria ?? []).filter((t) => !r.criteria.some((c) => c.text.trim() === t));
     changes.push({
       id: r.id,
@@ -278,7 +290,8 @@ export function previewFeedback(p: Project, f: Feedback): FeedbackPreview {
       title: r.title,
       statusFrom: r.status,
       statusTo: it.status && it.status !== r.status ? it.status : null,
-      criteriaTicked: r.criteria.filter((c) => tick.has(c.id) && !c.done).map((c) => c.text),
+      criteriaTested: [...r.criteria.filter((c) => tested.has(c.id) && !c.tested).map((c) => c.text), ...add.filter((t) => tested.has(t))],
+      criteriaReopened: r.criteria.filter((c) => reopen.has(c.id) && c.done).map((c) => c.text),
       criteriaAdded: add,
       descChanged: it.update?.description !== undefined && it.update.description.trim() !== r.desc.trim(),
       note: (it.note ?? "").trim(),
@@ -300,8 +313,17 @@ export function applyFeedback(p: Project, f: Feedback, now = Date.now()): number
     n++;
     if (it.update?.description !== undefined && it.update.description.trim()) r.desc = it.update.description;
     for (const t of it.update?.addCriteria ?? []) if (!r.criteria.some((c) => c.text.trim() === t)) r.criteria.push({ id: uid("c"), text: t, done: false });
-    const tick = new Set(it.criteriaDone);
-    for (const c of r.criteria) if (tick.has(c.id)) c.done = true;
+    // „Test grün“ gibt den Stand der letzten Rückmeldung wieder; der Haken bleibt dem Nutzer vorbehalten.
+    const tested = new Set(it.criteriaTested);
+    const reopen = new Set(it.criteriaReopen);
+    const meldetTests = tested.size > 0 || it.status === "review";
+    for (const c of r.criteria) {
+      if (meldetTests) {
+        if (tested.has(c.id) || tested.has(c.text.trim())) c.tested = true;
+        else delete c.tested;
+      }
+      if (reopen.has(c.id)) c.done = false;
+    }
     if (it.status) r.status = it.status;
     const note = (it.note ?? "").trim();
     if (it.status === "review") r.impl = { at: now, order: f.orderId, note, snap: implSnap(r) };

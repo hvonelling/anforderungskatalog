@@ -359,7 +359,8 @@ export function BriefDialog({ s, p }: { s: Store; p: Project }) {
 function FeedbackPreviewBox({ s, p }: { s: Store; p: Project }) {
   const f = s.ui.feedback!;
   const pre = previewFeedback(p, f);
-  const nothing = pre.changes.every((c) => !c.statusTo && !c.criteriaTicked.length && !c.criteriaAdded.length && !c.descChanged && !c.note);
+  const leer = (c: (typeof pre.changes)[number]) => !c.statusTo && !c.criteriaTested.length && !c.criteriaReopened.length && !c.criteriaAdded.length && !c.descChanged && !c.note;
+  const nothing = pre.changes.every(leer);
   return (
     <div class="vbox">
       <span style="font-weight:600">Vorschau der Rückmeldung {f.orderId && <span class="mono dim">{f.orderId}</span>}</span>
@@ -376,15 +377,18 @@ function FeedbackPreviewBox({ s, p }: { s: Store; p: Project }) {
                 Status: {STATUS[c.statusFrom].label} → <b>{STATUS[c.statusTo].label}</b>
               </li>
             )}
-            {c.criteriaTicked.map((t) => (
-              <li key={"t" + t}>Kriterium erfüllt: {t}</li>
+            {c.criteriaTested.map((t) => (
+              <li key={"t" + t}>Test grün: {t}</li>
+            ))}
+            {c.criteriaReopened.map((t) => (
+              <li key={"r" + t}>Haken wird entfernt, bitte neu prüfen: {t}</li>
             ))}
             {c.criteriaAdded.map((t) => (
               <li key={"a" + t}>Neues Kriterium: {t}</li>
             ))}
             {c.descChanged && <li>Beschreibung wird ergänzt</li>}
             {c.note && <li class="muted">Notiz: {c.note}</li>}
-            {!c.statusTo && !c.criteriaTicked.length && !c.criteriaAdded.length && !c.descChanged && !c.note && <li class="dim">keine Änderung</li>}
+            {leer(c) && <li class="dim">keine Änderung</li>}
           </ul>
         </div>
       ))}

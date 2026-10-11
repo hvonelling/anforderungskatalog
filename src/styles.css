@@ -1109,9 +1109,17 @@ table.t tbody tr.on {
 }
 .crit {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
+}
+.tested {
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
 }
 .link-row {
   display: grid;

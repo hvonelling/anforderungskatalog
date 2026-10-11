@@ -459,7 +459,7 @@ export function normalizeProject(raw: unknown, now = Date.now()): Project {
         prereqIds: strs(r.prereqIds),
         desc: str(r.desc),
         story: { role: str(st.role), goal: str(st.goal), benefit: str(st.benefit) },
-        criteria: arr(r.criteria).map((c) => ({ id: str(c.id) || uid("c"), text: str(c.text), done: !!c.done })),
+        criteria: arr(r.criteria).map((c) => ({ id: str(c.id) || uid("c"), text: str(c.text), done: !!c.done, ...(c.tested ? { tested: true } : {}) })),
         attachments: arr(r.attachments).map((a): Attachment => ({ id: str(a.id) || uid("a"), name: str(a.name, "Datei"), type: str(a.type), size: num(a.size, 0) })),
         history: arr(r.history).map((h) => ({ date: str(h.date), from: str(h.from), to: str(h.to) })),
         createdAt: num(r.createdAt, now + i),

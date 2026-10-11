@@ -128,7 +128,7 @@ describe("Rückmeldung", () => {
     const r = req(p, "REQ-002");
     const before = JSON.stringify(p);
     const f = feedback(p, [
-      { id: r.id, status: "review", note: "SSO über OIDC gebaut.", criteriaDone: [r.criteria[0].id], update: { addCriteria: ["Fehlermeldung bei abgelaufener Sitzung"] } },
+      { id: r.id, status: "review", note: "SSO über OIDC gebaut.", criteriaTested: [r.criteria[0].id], update: { addCriteria: ["Fehlermeldung bei abgelaufener Sitzung"] } },
       { id: "gibtsnicht", key: "REQ-099", status: "review" },
     ]);
     const pre = previewFeedback(p, f);
@@ -136,7 +136,7 @@ describe("Rückmeldung", () => {
     expect(pre.projectOk).toBe(true);
     expect(pre.unknown).toEqual(["REQ-099"]);
     expect(pre.changes).toEqual([
-      { id: r.id, key: "REQ-002", title: r.title, statusFrom: "open", statusTo: "review", criteriaTicked: ["Login-Button „Mit Firmenkonto anmelden“"], criteriaAdded: ["Fehlermeldung bei abgelaufener Sitzung"], descChanged: false, note: "SSO über OIDC gebaut." },
+      { id: r.id, key: "REQ-002", title: r.title, statusFrom: "open", statusTo: "review", criteriaTested: ["Login-Button „Mit Firmenkonto anmelden“"], criteriaReopened: [], criteriaAdded: ["Fehlermeldung bei abgelaufener Sitzung"], descChanged: false, note: "SSO über OIDC gebaut." },
     ]);
     expect(previewFeedback(demoProject(), f).projectOk).toBe(false);
   });
@@ -144,15 +144,57 @@ describe("Rückmeldung", () => {
   it("überträgt Status, Kriterien, Ergänzungen und Notiz", () => {
     const { p } = setup();
     const r = req(p, "REQ-002");
-    const n = applyFeedback(p, feedback(p, [{ id: r.id, status: "review", note: "Gebaut.", criteriaDone: [r.criteria[0].id], update: { description: "Anmeldung über OIDC.", addCriteria: ["Neu geklärt"] } }, { id: "weg" }]), 7000);
+    const n = applyFeedback(p, feedback(p, [{ id: r.id, status: "review", note: "Gebaut.", criteriaTested: [r.criteria[0].id], update: { description: "Anmeldung über OIDC.", addCriteria: ["Neu geklärt"] } }, { id: "weg" }]), 7000);
     expect(n).toBe(1);
     expect(r.status).toBe("review");
     expect(r.desc).toBe("Anmeldung über OIDC.");
-    expect(r.criteria.map((c) => [c.text, c.done])).toEqual([["Login-Button „Mit Firmenkonto anmelden“", true], ["Abmeldung beendet auch die SSO-Sitzung", false], ["Neu geklärt", false]]);
+    // Die Rückmeldung markiert nur „Test grün“; abgehakt wird nichts.
+    expect(r.criteria.map((c) => [c.text, c.done, !!c.tested])).toEqual([["Login-Button „Mit Firmenkonto anmelden“", false, true], ["Abmeldung beendet auch die SSO-Sitzung", false, false], ["Neu geklärt", false, false]]);
     expect(r.impl).toMatchObject({ at: 7000, order: "auftrag-2026-10-09-abcde", note: "Gebaut." });
     expect(r.impl!.snap.criteria.length).toBe(3);
     expect(r.history[0]).toMatchObject({ from: "Rückmeldung", to: "Zu prüfen: Gebaut." });
     expect(changedSinceImpl(r)).toBe(false);
+  });
+
+  it("lässt den Haken des Nutzers unberührt und öffnet ihn nur auf ausdrücklichen Wunsch", () => {
+    const { p } = setup();
+    const r = req(p, "REQ-002");
+    const [a, b] = r.criteria;
+    a.done = true;
+    b.done = true;
+    const f = feedback(p, [{ id: r.id, status: "review", criteriaTested: [a.id, "Neu geklärt"], criteriaReopen: [b.id, "gibtsnicht"], update: { addCriteria: ["Neu geklärt"] } }]);
+    expect(previewFeedback(p, f).changes[0]).toMatchObject({ criteriaTested: [a.text, "Neu geklärt"], criteriaReopened: [b.text], criteriaAdded: ["Neu geklärt"] });
+    applyFeedback(p, f, 7000);
+    expect(r.criteria.map((c) => [c.done, !!c.tested])).toEqual([[true, true], [false, false], [false, true]]);
+    // Ein zweites Einlesen ändert nichts mehr.
+    expect(previewFeedback(p, f).changes[0]).toMatchObject({ criteriaTested: [], criteriaReopened: [], criteriaAdded: [] });
+    // Die nächste Rückmeldung gibt den neuen Teststand wieder: was nicht mehr als getestet gemeldet ist, verliert die Markierung.
+    applyFeedback(p, feedback(p, [{ id: r.id, status: "review", criteriaTested: [b.id] }]), 8000);
+    expect(r.criteria.map((c) => [c.done, !!c.tested])).toEqual([[true, false], [false, true], [false, false]]);
+    // Eine Rückmeldung ohne Teststand (nur Notiz) lässt die Markierungen stehen.
+    applyFeedback(p, feedback(p, [{ id: r.id, note: "Nachtrag" }]), 9000);
+    expect(r.criteria.map((c) => !!c.tested)).toEqual([false, true, false]);
+  });
+
+  it("liest ältere Rückmeldungen mit criteriaDone als Teststand, nicht als Haken", () => {
+    const { p } = setup();
+    const r = req(p, "REQ-002");
+    const f = parseFeedback({ format: FEEDBACK_FORMAT, orderId: "x", projectId: p.id, items: [{ id: r.id, status: "review", criteriaDone: [r.criteria[0].id], criteriaReopen: [r.criteria[1].id] }] });
+    expect(f.items[0]).toMatchObject({ criteriaTested: [r.criteria[0].id], criteriaReopen: [r.criteria[1].id] });
+    applyFeedback(p, f, 7000);
+    expect(r.criteria.map((c) => [c.done, !!c.tested])).toEqual([[false, true], [false, false]]);
+  });
+
+  it("gibt im Auftrag Haken und Teststand je Kriterium getrennt mit", () => {
+    const { p } = setup();
+    const r = req(p, "REQ-002");
+    r.criteria[0].tested = true;
+    r.criteria[1].done = true;
+    const o = buildOrder(p, r.versionId!, r.phaseId!, 1000)!;
+    expect(o.requirements.find((x) => x.id === r.id)!.criteria.map((c) => [c.done, c.tested])).toEqual([[false, true], [true, false]]);
+    const md = orderMarkdown(o);
+    expect(md).toContain("- [ ] Login-Button „Mit Firmenkonto anmelden“ (Test grün)");
+    expect(md).toContain("- [x] Abmeldung beendet auch die SSO-Sitzung\n");
   });
 
   it("setzt nie selbst auf Erledigt und vermerkt Teilweises ohne Umsetzungsstand", () => {

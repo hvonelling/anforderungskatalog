@@ -393,7 +393,7 @@ describe("Oberfläche", () => {
     const p = store.project!;
     const admin = p.reqs.find((r) => r.title === "Benutzer anlegen")!;
     await act(() => store.upd(admin.id, (r) => r.criteria.push({ id: "ck1", text: "Pflichtfelder geprüft", done: false })));
-    const fb = { format: "anforderungskatalog-rueckmeldung-v1", orderId: "auftrag-2026-10-09-test1", projectId: p.id, summary: "Phase 1 gebaut.", items: [{ id: admin.id, key: admin.key, status: "done", note: "Maske und Speichern fertig.", criteriaDone: ["ck1"] }] };
+    const fb = { format: "anforderungskatalog-rueckmeldung-v1", orderId: "auftrag-2026-10-09-test1", projectId: p.id, summary: "Phase 1 gebaut.", items: [{ id: admin.id, key: admin.key, status: "done", note: "Maske und Speichern fertig.", criteriaTested: ["ck1"] }] };
     const file = new File(["x"], "rueckmeldung.json");
     Object.defineProperty(file, "text", { configurable: true, value: async () => JSON.stringify(fb) });
     await act(() => store.loadFeedback(file));
@@ -401,19 +401,22 @@ describe("Oberfläche", () => {
     expect(dlg.textContent).toContain("Vorschau der Rückmeldung");
     expect(dlg.textContent).toContain("Phase 1 gebaut.");
     expect(dlg.textContent).toContain("Status: Offen → Zu prüfen");
-    expect(dlg.textContent).toContain("Kriterium erfüllt: Pflichtfelder geprüft");
+    expect(dlg.textContent).toContain("Test grün: Pflichtfelder geprüft");
     // Noch ist nichts geändert.
     expect(store.project!.reqs.find((r) => r.id === admin.id)!.status).toBe("open");
     await click(byText(".dialog button", "Übernehmen"));
     const after = store.project!.reqs.find((r) => r.id === admin.id)!;
     expect(after.status).toBe("review");
-    expect(after.criteria.find((c) => c.id === "ck1")!.done).toBe(true);
+    // Der Haken bleibt beim Nutzer; die Rückmeldung markiert nur den grünen Test.
+    expect(after.criteria.find((c) => c.id === "ck1")).toMatchObject({ done: false, tested: true });
     expect(after.impl!.note).toBe("Maske und Speichern fertig.");
     await click($(".dialog-head .icon-btn")!);
 
     await click(byText(".row", "Benutzer anlegen"));
     expect($(".drawer .impl")!.textContent).toContain("Umgesetzt");
     expect($(".drawer .impl")!.textContent).toContain("Maske und Speichern fertig.");
+    expect($$(".drawer .crit .tested").map((e) => e.textContent!.trim())).toEqual(["Test grün"]);
+    expect($(".drawer")!.textContent).toContain("0/1 erfüllt · 1 getestet");
     expect($$(".drawer .seg:not(.prio-seg) button").map((b) => b.textContent)).toEqual(["Offen", "In Arbeit", "Zu prüfen", "Erledigt"]);
     await type($(".title-input") as HTMLTextAreaElement, "Benutzer anlegen und einladen");
     expect($(".drawer .impl.changed")!.textContent).toContain("Geändert seit der Umsetzung");

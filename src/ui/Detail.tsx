@@ -89,6 +89,7 @@ export function Detail({ s, p, ix, r }: { s: Store; p: Project; ix: MenuIndex; r
   };
   const unlinked = p.prereqs.filter((q) => !r.prereqIds.includes(q.id));
   const critDone = r.criteria.filter((c) => c.done).length;
+  const critTested = r.criteria.filter((c) => c.tested).length;
   const sentence = storyText(r);
   // Mögliche große Anforderungen: eigenständig, nicht diese selbst.
   const hosts = !isPart && info.parts.length === 0 ? liveReqs(p).filter((x) => !x.parentId && x.id !== id).sort((a, b) => cmpKey(a.key, b.key)) : [];
@@ -311,13 +312,33 @@ export function Detail({ s, p, ix, r }: { s: Store; p: Project; ix: MenuIndex; r
           <div class="sec-head">
             <span class="label">Akzeptanzkriterien</span>
             <span class="mono dim" style="margin-left:auto">
-              {r.criteria.length ? critDone + "/" + r.criteria.length + " erfüllt" : ""}
+              {r.criteria.length ? critDone + "/" + r.criteria.length + " erfüllt" + (critTested ? " · " + critTested + " getestet" : "") : ""}
             </span>
           </div>
           {r.criteria.map((c) => (
             <div key={c.id} class="crit">
               <Check done={c.done} onToggle={() => s.upd(id, (x) => x.criteria.forEach((y) => y.id === c.id && (y.done = !y.done)))} />
-              <input class={"ghost" + (c.done ? " done-text" : "")} value={c.text} onInput={(e) => s.upd(id, (x) => x.criteria.forEach((y) => y.id === c.id && (y.text = val(e))))} />
+              <input
+                class={"ghost" + (c.done ? " done-text" : "")}
+                value={c.text}
+                onInput={(e) =>
+                  s.upd(id, (x) =>
+                    x.criteria.forEach((y) => {
+                      if (y.id !== c.id) return;
+                      y.text = val(e);
+                      // Ein geänderter Text ist nicht mehr das, was getestet wurde.
+                      delete y.tested;
+                    }),
+                  )
+                }
+              />
+              {c.tested ? (
+                <span class="tested" title="Der automatische Test zu diesem Kriterium lief laut letzter Rückmeldung grün. Den Haken setzt du nach deiner eigenen Prüfung.">
+                  Test grün
+                </span>
+              ) : (
+                <span />
+              )}
               <button type="button" class="icon-btn" title="Kriterium entfernen" onClick={() => s.upd(id, (x) => (x.criteria = x.criteria.filter((y) => y.id !== c.id)))}>
                 ×
               </button>
